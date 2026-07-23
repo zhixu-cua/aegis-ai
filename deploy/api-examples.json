@@ -1,0 +1,222 @@
+{
+  "base": {
+    "assistantBaseUrl": "https://assistant.example.com",
+    "authHeaderExample": {
+      "Authorization": "Bearer <token>"
+    }
+  },
+  "auth": {
+    "login": {
+      "method": "POST",
+      "path": "/api/auth/login",
+      "request": {
+        "username": "admin",
+        "password": "admin_password"
+      },
+      "response": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+        "expiresIn": 7200,
+        "user": {
+          "id": 1,
+          "username": "admin",
+          "roles": ["ADMIN"]
+        }
+      }
+    },
+    "me": {
+      "method": "GET",
+      "path": "/api/auth/me",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      },
+      "response": {
+        "id": 2,
+        "username": "cs_user",
+        "roles": ["USER"]
+      }
+    }
+  },
+  "assistant": {
+    "createSession": {
+      "method": "POST",
+      "path": "/api/assistant/sessions",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      },
+      "request": {
+        "title": "附件访问问题排查"
+      },
+      "response": {
+        "sessionId": 10001
+      }
+    },
+    "chat": {
+      "method": "POST",
+      "path": "/api/assistant/chat",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      },
+      "request": {
+        "sessionId": 10001,
+        "question": "附件上传成功但访问 404 怎么排查？"
+      },
+      "response": {
+        "answer": "结论：该问题常见原因是附件未发布、附件目录映射错误或存储权限不足。建议步骤：1) 核对附件是否已发布或同步到发布目录；2) 核对附件访问路径与静态资源映射配置；3) 检查对象存储/文件系统权限与访问策略。引用来源：1) 附件发布与访问说明.pdf；2) 静态资源映射配置.md。建议：若仍无法定位，请提供附件 ID、访问 URL 与服务器日志片段转人工排查。",
+        "needManual": false,
+        "hitCount": 4,
+        "costMs": 6230,
+        "references": [
+          {
+            "documentId": 12,
+            "documentName": "附件发布与访问说明.pdf",
+            "chunkId": 883,
+            "snippet": "附件访问 404 常见原因：未发布、路径映射错误、权限不足..."
+          },
+          {
+            "documentId": 13,
+            "documentName": "静态资源映射配置.md",
+            "chunkId": 901,
+            "snippet": "检查静态资源映射：nginx location、Spring static path、发布目录..."
+          }
+        ]
+      }
+    },
+    "listSessions": {
+      "method": "GET",
+      "path": "/api/assistant/sessions",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      },
+      "response": [
+        {
+          "id": 10001,
+          "sessionTitle": "附件访问问题排查",
+          "lastActiveTime": "2026-07-22T10:32:11+08:00"
+        }
+      ]
+    },
+    "listMessages": {
+      "method": "GET",
+      "path": "/api/assistant/sessions/10001/messages",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      },
+      "response": [
+        {
+          "id": 20001,
+          "role": "user",
+          "content": "附件上传成功但访问 404 怎么排查？",
+          "messageTime": "2026-07-22T10:32:05+08:00"
+        },
+        {
+          "id": 20002,
+          "role": "assistant",
+          "content": "结论：该问题常见原因是附件未发布、附件目录映射错误或存储权限不足...",
+          "messageTime": "2026-07-22T10:32:11+08:00",
+          "answerStatus": "OK",
+          "hitCount": 4,
+          "costMs": 6230
+        }
+      ]
+    }
+  },
+  "knowledge": {
+    "upload": {
+      "method": "POST",
+      "path": "/api/knowledge/upload",
+      "headers": {
+        "Authorization": "Bearer <token>",
+        "Content-Type": "multipart/form-data"
+      },
+      "request": {
+        "fileField": "file",
+        "fileNameExample": "网站群常见问题处理手册.pdf"
+      },
+      "response": {
+        "documentId": 12,
+        "status": "PENDING"
+      }
+    },
+    "listDocuments": {
+      "method": "GET",
+      "path": "/api/knowledge/documents",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      },
+      "response": [
+        {
+          "id": 12,
+          "fileName": "网站群常见问题处理手册.pdf",
+          "fileType": "pdf",
+          "status": "READY",
+          "uploadTime": "2026-07-22T09:10:00+08:00"
+        }
+      ]
+    },
+    "reindex": {
+      "method": "POST",
+      "path": "/api/knowledge/documents/12/reindex",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      },
+      "response": {
+        "documentId": 12,
+        "status": "PROCESSING"
+      }
+    },
+    "delete": {
+      "method": "DELETE",
+      "path": "/api/knowledge/documents/12",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      },
+      "response": {
+        "deleted": true
+      }
+    }
+  },
+  "audit": {
+    "assistantLogs": {
+      "method": "GET",
+      "path": "/api/audit/assistant-logs?from=2026-07-01&to=2026-07-31&userId=2",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      },
+      "response": [
+        {
+          "id": 90001,
+          "userId": 2,
+          "actionType": "CHAT",
+          "requestSummary": "附件上传成功但访问 404 怎么排查？",
+          "resultFlag": "OK",
+          "createTime": "2026-07-22T10:32:11+08:00"
+        }
+      ]
+    }
+  },
+  "internal": {
+    "ragQuery": {
+      "method": "POST",
+      "path": "/internal/rag/query",
+      "request": {
+        "question": "栏目模板修改后没有生效的常见原因是什么？",
+        "sessionId": 10002,
+        "userId": 2
+      },
+      "response": {
+        "answer": "结论：通常由模板未发布、缓存未清理或静态页未重新生成导致...",
+        "needManual": false,
+        "hitCount": 3,
+        "costMs": 5120,
+        "references": [
+          {
+            "documentId": 21,
+            "documentName": "模板发布说明.docx",
+            "chunkId": 12001,
+            "snippet": "模板修改后需发布并触发重新生成..."
+          }
+        ]
+      }
+    }
+  }
+}
