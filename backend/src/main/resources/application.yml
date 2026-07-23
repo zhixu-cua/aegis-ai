@@ -8,12 +8,6 @@ spring:
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:aegis_assistant}
     username: ${DB_USER:aegis}
     password: ${DB_PASS:aegis123}
-  jpa:
-    hibernate:
-      ddl-auto: none
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
   data:
     redis:
       host: ${REDIS_HOST:localhost}

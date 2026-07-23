@@ -1,6 +1,10 @@
 package com.aegis.assistant.controller;
 
 import cn.dev33.satoken.stp.StpUtil;
+import com.aegis.assistant.config.Result;
+import com.aegis.assistant.entity.User;
+import com.aegis.assistant.repository.UserRepository;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -13,21 +17,25 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/user/")
 public class UserController {
 
+    @Autowired
+    private UserRepository userRepository;
+
     // 测试登录，浏览器访问： http://localhost:8082/user/doLogin?username=zhang&password=123456
     @RequestMapping("doLogin")
-    public String doLogin(String username, String password) {
-        // 此处仅作模拟示例，真实项目需要从数据库中查询数据进行比对
-        if("zhang".equals(username) && "123456".equals(password)) {
-            StpUtil.login(10001);
-            return "登录成功";
+    public Result<String> doLogin(String username, String password) {
+        // 从数据库中查询用户进行比对
+        User user = userRepository.findByUsername(username);
+        if (user != null && user.getPassword().equals(password)) {
+            StpUtil.login(user.getId());
+            return Result.success("登录成功");
         }
-        return "登录失败";
+        return Result.error(401, "登录失败，用户名或密码错误");
     }
 
     // 查询登录状态，浏览器访问： http://localhost:8082/user/isLogin
     @RequestMapping("isLogin")
-    public String isLogin() {
-        return "当前会话是否登录：" + StpUtil.isLogin();
+    public Result<String> isLogin() {
+        return Result.success("当前会话是否登录：" + StpUtil.isLogin());
     }
 
 }

@@ -4,3 +4,4 @@ sqlalchemy
 asyncpg
 redis
 minio
+httpx

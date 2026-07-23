@@ -13,6 +13,6 @@ public class BackendApplication {
 
     public static void main(String[] args) {
         SpringApplication.run(BackendApplication.class, args);
-         System.out.println("启动成功，Sa-Token 配置如下：" + SaManager.getConfig());
+//         System.out.println("启动成功，Sa-Token 配置如下：" + SaManager.getConfig());
     }
 }
