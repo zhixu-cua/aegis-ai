@@ -30,7 +30,6 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
-import request from '../api/request';
 
 const router = useRouter();
 const inputMsg = ref('');

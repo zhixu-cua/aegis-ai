@@ -2,9 +2,12 @@ package com.aegis.assistant.controller;
 
 import cn.dev33.satoken.stp.StpUtil;
 import com.aegis.assistant.config.Result;
+import com.aegis.assistant.dto.LoginRequest;
 import com.aegis.assistant.entity.User;
 import com.aegis.assistant.repository.UserRepository;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -21,9 +24,12 @@ public class UserController {
     private UserRepository userRepository;
 
     // 测试登录，浏览器访问： http://localhost:8082/user/doLogin?username=zhang&password=123456
-    @RequestMapping("doLogin")
-    public Result<String> doLogin(String username, String password) {
+    @PostMapping("doLogin")
+    public Result<String> doLogin(@RequestBody LoginRequest loginRequest) {
         // 从数据库中查询用户进行比对
+        String username = loginRequest.getUsername();
+        String password = loginRequest.getPassword();
+        System.out.println("username = " + username + ", password = " + password);
         User user = userRepository.findByUsername(username);
         if (user != null && user.getPassword().equals(password)) {
             StpUtil.login(user.getId());
