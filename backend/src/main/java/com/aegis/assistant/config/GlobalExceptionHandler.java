@@ -1,5 +1,6 @@
 package com.aegis.assistant.config;
 
+import cn.dev33.satoken.exception.NotLoginException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -8,6 +9,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    @ExceptionHandler(NotLoginException.class)
+    public Result<String> handleNotLoginException(NotLoginException e) {
+        return Result.error(401, e.getMessage() != null ? e.getMessage() : "未登录/登录过期");
+    }
 
     @ExceptionHandler(Exception.class)
     public Result<String> handleException(Exception e) {

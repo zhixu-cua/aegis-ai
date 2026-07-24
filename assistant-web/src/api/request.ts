@@ -2,7 +2,7 @@ import axios, {type InternalAxiosRequestConfig, type AxiosResponse, AxiosError }
 
 const request = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
-  timeout: 10000,
+  timeout: 120000, // 增加到120秒，大模型推理时间较长
 });
 
 // 请求拦截器
@@ -24,16 +24,28 @@ request.interceptors.request.use(
 // 响应拦截器
 request.interceptors.response.use(
   (response: AxiosResponse) => {
-    return response.data;
+    const res = response.data;
+    // 拦截业务自定义的 401 状态码 (NotLoginException 会返回这个)
+    if (res && res.code === 401) {
+      localStorage.removeItem('satoken');
+      window.location.href = '/login';
+      return Promise.reject(new Error(res.msg || '未登录/登录过期'));
+    }
+    return res;
   },
   (error: AxiosError) => {
-    // 可以统一处理错误
+    // 统一处理 HTTP 层面的 401 状态码
     if (error.response && error.response.status === 401) {
       // token 过期或无效，跳转登录
       localStorage.removeItem('satoken');
       window.location.href = '/login';
     }
-    return Promise.reject(error);
+    const errorMessage =
+      (error.response?.data as { msg?: string; detail?: string } | undefined)?.msg ||
+      (error.response?.data as { msg?: string; detail?: string } | undefined)?.detail ||
+      error.message ||
+      '请求失败';
+    return Promise.reject(new Error(errorMessage));
   }
 );
 
