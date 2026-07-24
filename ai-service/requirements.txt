@@ -4,4 +4,4 @@ sqlalchemy
 asyncpg
 redis
 minio
-httpx
+psycopg2-binary
