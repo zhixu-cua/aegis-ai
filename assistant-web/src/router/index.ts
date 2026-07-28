@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory, type RouteRecordRaw, type NavigationGuardNext, type RouteLocationNormalized } from 'vue-router';
 import Login from '../views/Login.vue';
 import Chat from '../views/Chat.vue';
+import KnowledgeBase from '../views/KnowledgeBase.vue';
 
 const routes: RouteRecordRaw[] = [
   {
@@ -17,6 +18,12 @@ const routes: RouteRecordRaw[] = [
     path: '/chat',
     name: 'Chat',
     component: Chat,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/kb',
+    name: 'KnowledgeBase',
+    component: KnowledgeBase,
     meta: { requiresAuth: true }
   }
 ];

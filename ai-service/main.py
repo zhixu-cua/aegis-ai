@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
-from api.routes import health, chat
+from api.routes import health, chat, kb
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -12,6 +12,7 @@ app = FastAPI(title="售后助手 AI 服务", lifespan=lifespan)
 
 app.include_router(health.router)
 app.include_router(chat.router)
+app.include_router(kb.router)
 
 if __name__ == "__main__":
     import uvicorn
