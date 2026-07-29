@@ -43,9 +43,24 @@ def process_document(document_id: int, file_path: str):
             if not text.strip():
                 raise Exception("文件内容为空")
                 
-            # Basic chunking (800 chars)
-            chunk_size = 800
-            chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+            # Semantic chunking (语义分块)
+            import re
+            sentences = re.split(r'(?<=[。！？!?\n])', text)
+            chunks = []
+            current_chunk = ""
+            # 可调参数: max_len 语义分块的最大字符长度，可以根据业务文档的长短调节（如 500-1000）
+            max_len = 500
+            for sentence in sentences:
+                if not sentence.strip():
+                    continue
+                if len(current_chunk) + len(sentence) <= max_len:
+                    current_chunk += sentence
+                else:
+                    if current_chunk:
+                        chunks.append(current_chunk.strip())
+                    current_chunk = sentence
+            if current_chunk:
+                chunks.append(current_chunk.strip())
             
             ollama_url = "http://127.0.0.1:11434/api/embeddings"
             proxy_handler = urllib.request.ProxyHandler({})

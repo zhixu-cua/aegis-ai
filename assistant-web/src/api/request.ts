@@ -2,7 +2,7 @@ import axios, {type InternalAxiosRequestConfig, type AxiosResponse, AxiosError }
 
 const request = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
-  timeout: 120000, // 增加到120秒，大模型推理时间较长
+  timeout: 300000, // 5分钟超时
 });
 
 // 请求拦截器
