@@ -1,6 +1,7 @@
 package com.aegis.assistant.entity;
 
 import jakarta.persistence.*;
+import com.fasterxml.jackson.annotation.JsonFormat;
 import java.time.LocalDateTime;
 
 @Entity
@@ -30,12 +31,15 @@ public class KbDocument {
     private Long uploadUserId;
 
     @Column(name = "upload_time")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private LocalDateTime uploadTime;
 
     @Column(name = "created_at")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private LocalDateTime createdAt;
 
     @Column(name = "updated_at")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private LocalDateTime updatedAt;
 
     @PrePersist
