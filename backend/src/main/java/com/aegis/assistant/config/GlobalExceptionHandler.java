@@ -12,7 +12,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(NotLoginException.class)
     public Result<String> handleNotLoginException(NotLoginException e) {
-        return Result.error(401, e.getMessage() != null ? e.getMessage() : "未登录/登录过期");
+        return Result.error(401, e.getMessage() != null ? e.getMessage() : "登录失效，请重新登录");
     }
 
     @ExceptionHandler(Exception.class)

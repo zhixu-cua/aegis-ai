@@ -42,6 +42,7 @@
         v-for="(msg, index) in messages" 
         :key="index"
         :class="['message-wrapper', msg.role === 'user' ? 'is-user' : 'is-ai']"
+        v-show="!(msg.role === 'ai' && msg.content === '' && loading)"
       >
         <div class="avatar" v-if="msg.role === 'ai'">🤖</div>
         <div class="message-bubble">
@@ -107,7 +108,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, nextTick } from 'vue';
+import { ref, computed, onMounted, nextTick } from 'vue';
 import { useRouter } from 'vue-router';
 import request from '../api/request';
 import { marked } from 'marked';
@@ -168,7 +169,7 @@ const createNewSession = async () => {
       const newSession: ChatSession = {
         id: res.data.id.toString(),
         title: res.data.sessionTitle,
-        messages: [{ role: 'ai', content: '您好！我是您的售后助手，有什么我可以帮助您的吗？' }],
+        messages: [{ role: 'ai', content: '您好！我是您的售后助手，有什么可以帮助您？' }],
         updatedAt: new Date(res.data.lastActiveTime).getTime()
       };
       sessions.value.unshift(newSession);
@@ -191,7 +192,7 @@ const loadMessages = async (id: string) => {
         }));
         // 若没有消息，则添加默认问候语
         if (session.messages.length === 0) {
-          session.messages.push({ role: 'ai', content: '您好！我是您的售后助手，有什么我可以帮助您的吗？' });
+          session.messages.push({ role: 'ai', content: '您好！我是您的售后助手，有什么可以帮助您？' }); 
         }
         await scrollToBottom();
       }
@@ -332,37 +333,94 @@ const sendMessage = async () => {
     textareaRef.value.style.overflowY = 'hidden';
   }
   await scrollToBottom();
+
+  // 先在列表中占位一个空的 AI 消息，用于接收流式打字数据
+  const aiMsg: ChatMessage = { 
+    role: 'ai', 
+    content: '',
+    citations: fileNames ? fileNames.split(', ') : undefined
+  };
+  currentSession.value.messages.push(aiMsg);
+  
+  // Vue 3 的 reactivity：向响应式数组 push 原生对象后，数组里的元素会变成 Proxy
+  // 必须通过数组索引获取到这个 Proxy 对象并修改它的属性，才能触发 Vue 的 DOM 更新！
+  // 之前直接修改原生的 aiMsg 变量是无法触发前端显示的。
+  const reactiveAiMsg = currentSession.value.messages[currentSession.value.messages.length - 1];
   
   try {
-    const res: any = await request.post('/assistant/chat', { 
-      question: displayMsg,
-      sessionId: currentSessionId.value 
+    // 获取当前用户的 token
+    const token = localStorage.getItem('satoken');
+    
+    // 使用 fetch API 接收 SSE 数据流
+    const response = await fetch('/api/assistant/chat/stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'satoken': token || ''
+      },
+      body: JSON.stringify({
+        question: displayMsg,
+        sessionId: currentSessionId.value
+      })
     });
-    if (res.code === 200 && res.data) {
-        // 模拟后端返回了 citation 数据，实际情况需要根据您的接口调整
-        currentSession.value.messages.push({ 
-          role: 'ai', 
-          content: res.data.answer,
-          citations: res.data.citations || (fileNames ? fileNames.split(', ') : undefined) 
-        });
+
+    if (!response.body) throw new Error('您的浏览器不支持 ReadableStream');
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let done = false;
+    let accumulatedContent = '';
+    let streamBuffer = '';
+
+    // 持续监听和拼接打字机流式数据
+    while (!done) {
+      const { value, done: readerDone } = await reader.read();
+      done = readerDone;
+      if (value) {
+        const chunk = decoder.decode(value, { stream: true });
+        streamBuffer += chunk;
         
-        // 如果后端返回了 sessionId（针对首次创建会话的情况），可选更新
-        if (res.data.sessionId && currentSessionId.value !== res.data.sessionId.toString()) {
-            currentSessionId.value = res.data.sessionId.toString();
+        // 按照 SSE 标准，每个事件以两个换行符 \n\n 分隔
+        const events = streamBuffer.split('\n\n');
+        // 将最后一个可能不完整的事件放回 buffer 中留待下次拼接
+        streamBuffer = events.pop() || '';
+        
+        for (const event of events) {
+          // 只关心以 data: 开头的内容（SSE 可能会有 event:, id: 等，但我们目前只发送了 data:）
+          const dataMatch = event.match(/^data:\s*(.*)/m);
+          if (dataMatch && dataMatch[1]) {
+            try {
+              // 这里的 dataMatch[1] 是包含在 data: 后面直到行尾的字符串，由于后端序列化为 JSON 且转义了换行符，它应该是完整的单行 JSON
+              const dataStr = dataMatch[1].trim();
+              if (dataStr) {
+                const data = JSON.parse(dataStr);
+                // 收到第一笔真实数据时，关闭 loading 骨架屏，避免出现两个回复框
+                if (loading.value) {
+                  loading.value = false;
+                }
+                accumulatedContent += data.content;
+                reactiveAiMsg.content = accumulatedContent;
+              }
+            } catch (e) {
+              console.error('SSE JSON 解析错误:', e, event);
+            }
+          }
         }
-    } else {
-        currentSession.value.messages.push({ role: 'ai', content: `Error: ${res.message || 'Unknown error'}` });
+        
+        await scrollToBottom();
+      }
     }
   } catch (error) {
-    console.error('Failed to send message', error);
+    console.error('发送失败:', error);
     const message = error instanceof Error ? error.message : '服务暂时不可用，请稍后重试。';
-    currentSession.value.messages.push({ role: 'ai', content: `Error: ${message}` });
+    reactiveAiMsg.content += `\n[Error: ${message}]`;
   } finally {
     if (currentSession.value) {
       currentSession.value.updatedAt = Date.now();
     }
     loading.value = false;
     await scrollToBottom();
+    await fetchSessions(); // 更新侧边栏列表（如果是新对话需要刷新标题）
   }
 };
 
@@ -377,9 +435,11 @@ const handleLogout = () => {
   display: flex;
   height: 100vh;
   width: 100vw;
-  max-width: 100%; /* 防止 Windows 系统下因为 100vw 包含滚动条而导致溢出 */
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: #f0f4f8;
   overflow: hidden;
-  background-color: #fafafa;
 }
 
 /* Sidebar Styles */

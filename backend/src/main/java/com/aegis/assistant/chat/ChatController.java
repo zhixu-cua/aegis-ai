@@ -6,6 +6,7 @@ import com.aegis.assistant.entity.AssistantMessage;
 import cn.dev33.satoken.stp.StpUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 
@@ -24,6 +25,11 @@ public class ChatController {
         } catch (Exception e) {
             return Result.error(500, "问答请求失败: " + e.getMessage());
         }
+    }
+
+    @PostMapping(value = "/chat/stream", produces = org.springframework.http.MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter chatStream(@RequestBody ChatRequest request) {
+        return chatService.chatStream(request);
     }
 
     @GetMapping("/sessions")

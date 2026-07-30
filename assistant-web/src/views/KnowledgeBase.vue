@@ -166,10 +166,11 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  max-width: 800px;
-  margin: 0 auto;
-  border-left: 1px solid #eee;
-  border-right: 1px solid #eee;
+  width: 100vw;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: #fafafa;
 }
 
 .kb-header {

@@ -1,28 +1,35 @@
 package com.aegis.assistant.controller;
 
-import cn.dev33.satoken.stp.StpUtil;
-import com.aegis.assistant.config.Result;
-import com.aegis.assistant.entity.KbDocument;
-import com.aegis.assistant.repository.KbDocumentRepository;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.*;
-import org.springframework.web.client.RestTemplate;
-import org.springframework.web.multipart.MultipartFile;
-
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.multipart.MultipartFile;
+
+import com.aegis.assistant.config.Result;
 import com.aegis.assistant.entity.AssistantAuditLog;
+import com.aegis.assistant.entity.KbDocument;
 import com.aegis.assistant.repository.AssistantAuditLogRepository;
-import java.util.Date;
+import com.aegis.assistant.repository.KbDocumentRepository;
+
+import cn.dev33.satoken.stp.StpUtil;
 
 @RestController
 @RequestMapping("/kb")

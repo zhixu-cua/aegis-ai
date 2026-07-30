@@ -7,6 +7,7 @@ import asyncio
 import math
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 try:
@@ -17,9 +18,13 @@ except ImportError:
 try:
     from sentence_transformers import CrossEncoder
     # 初始化重排序模型 ms-marco-MiniLM-L-6-v2
-    # 可以在此处调整模型路径或设备参数，例如 device='cpu' 或 device='cuda'
-    reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
-   # reranker = None # 暂时注释掉重排序，只用混合检索
+    # 为了防止因网络问题导致整个应用崩溃，在这里捕获异常
+    try:
+        # reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+        reranker = None # 根据用户要求，彻底注释掉重排序，只用混合检索，避免占用大量 CPU 资源
+    except Exception as e:
+        print(f"Warning: Failed to load CrossEncoder model from huggingface: {e}")
+        reranker = None
 except ImportError:
     reranker = None
 
@@ -198,14 +203,33 @@ def rag_query(request: QueryRequest):
 
     # 3. Construct RAG prompt
     context = "\n\n".join(chunks_text)
-    prompt = f"Context: {context}\nQuestion: {request.question}"
+    
+    # 动态判断：如果有检索到文档内容，就使用严格 RAG 模板；如果没有，则使用通用闲聊/问答模板。
+    if context.strip():
+        prompt = (
+            "请你作为专业的售后知识库助手，根据以下【参考文档】来回答用户的问题。\n"
+            "【约束条件】\n"
+            "1. 优先使用【参考文档】中提供的信息作答。\n"
+            "2. 如果参考文档的信息不够，你可以结合自身的知识进行补充，但请明确说明哪部分是文档里的，哪部分是你的补充。\n"
+            "3. 你的回答必须使用中文。\n\n"
+            "【参考文档】\n"
+            f"{context}\n\n"
+            "【用户问题】\n"
+            f"{request.question}"
+        )
+    else:
+        prompt = (
+            "请你作为专业的智能售后助手，用中文回答用户的问题。如果问题超出了你的专业范围，请委婉地表示抱歉。\n\n"
+            "【用户问题】\n"
+            f"{request.question}"
+        )
 
     # 4. Send the new prompt to qwen:1.8b
     ollama_url = "http://127.0.0.1:11434/api/generate"
     payload = {
-        "model": "qwen:1.8b",
+        "model": "qwen3:0.6b",
         "prompt": prompt,
-        "stream": False,
+        "stream": True,
         "keep_alive": "10m"
     }
     
@@ -216,22 +240,27 @@ def rag_query(request: QueryRequest):
         headers={"Content-Type": "application/json"}
     )
 
-    last_error = "未知错误"
-    for attempt in range(3):
-        try:
-            with opener.open(req, timeout=300.0) as response:
-                result = json.loads(response.read().decode("utf-8"))
-                answer = result.get("response", "").strip()
-                if not answer:
-                    raise HTTPException(status_code=502, detail="Ollama 返回空响应")
-                return {"answer": answer}
-        except urllib.error.HTTPError as e:
-            error_body = e.read().decode("utf-8", errors="ignore")
-            last_error = f"HTTP {e.code}: {error_body or e.reason}"
-        except Exception as e:
-            last_error = str(e)
+    def generate_stream():
+        last_error = "未知错误"
+        for attempt in range(3):
+            try:
+                with opener.open(req, timeout=300.0) as response:
+                    for line in response:
+                        if line:
+                            chunk = json.loads(line)
+                            if "response" in chunk:
+                                yield chunk["response"].encode('utf-8')
+                return  # 成功完成流式输出，退出函数
+            except urllib.error.HTTPError as e:
+                error_body = e.read().decode("utf-8", errors="ignore")
+                last_error = f"HTTP {e.code}: {error_body or e.reason}"
+            except Exception as e:
+                last_error = str(e)
 
-        if attempt < 2:
-            time.sleep(1)
+            if attempt < 2:
+                time.sleep(1)
 
-    raise HTTPException(status_code=500, detail=f"Ollama request failed after retries: {last_error}")
+        # 重试失败后返回错误信息给客户端
+        yield f"\n[Ollama request failed after retries: {last_error}]".encode('utf-8')
+
+    return StreamingResponse(generate_stream(), media_type="text/plain")
