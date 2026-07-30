@@ -1,25 +1,27 @@
 package com.aegis.assistant.chat;
 
-import com.aegis.assistant.entity.AssistantSession;
-import com.aegis.assistant.entity.AssistantMessage;
-import com.aegis.assistant.entity.AssistantAuditLog;
-import com.aegis.assistant.repository.AssistantSessionRepository;
-import com.aegis.assistant.repository.AssistantMessageRepository;
-import com.aegis.assistant.repository.AssistantAuditLogRepository;
-import cn.dev33.satoken.stp.StpUtil;
+import java.io.InputStream;
+import java.util.Collections;
+import java.util.Date;
+import java.util.List;
+
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.MediaType;
+
+import com.aegis.assistant.entity.AssistantAuditLog;
+import com.aegis.assistant.entity.AssistantMessage;
+import com.aegis.assistant.entity.AssistantSession;
+import com.aegis.assistant.repository.AssistantAuditLogRepository;
+import com.aegis.assistant.repository.AssistantMessageRepository;
+import com.aegis.assistant.repository.AssistantSessionRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.io.InputStream;
-import java.util.Date;
-import java.util.List;
-import java.util.Collections;
+import cn.dev33.satoken.stp.StpUtil;
 
 @Service
 public class ChatService {
