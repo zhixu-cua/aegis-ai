@@ -12,7 +12,7 @@
       <div class="upload-section">
         <h3>上传文档</h3>
         <div class="upload-controls">
-          <input type="file" ref="fileInput" @change="handleFileChange" />
+          <input type="file" ref="fileInput" @change="handleFileChange" accept=".txt,.md,.pdf,.docx,.doc,.xlsx,.xls,.png,.jpg" />
           <button @click="uploadFile" :disabled="uploading || !selectedFile">
             {{ uploading ? 'Uploading...' : '上传' }}
           </button>

@@ -85,7 +85,7 @@
         
         <div class="textarea-container">
           <label class="upload-btn">
-            <input type="file" @change="handleFileSelect" accept=".txt,.md" hidden multiple />
+            <input type="file" @change="handleFileSelect" accept=".txt,.md,.pdf,.docx,.doc,.xlsx,.xls,.png,.jpg" hidden multiple />
             📎
           </label>
           <textarea 

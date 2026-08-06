@@ -10,9 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -20,7 +18,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
 import com.aegis.assistant.config.Result;
@@ -28,6 +25,7 @@ import com.aegis.assistant.entity.AssistantAuditLog;
 import com.aegis.assistant.entity.KbDocument;
 import com.aegis.assistant.repository.AssistantAuditLogRepository;
 import com.aegis.assistant.repository.KbDocumentRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import cn.dev33.satoken.stp.StpUtil;
 
@@ -39,21 +37,18 @@ public class KbController {
 
     private final AssistantAuditLogRepository logRepository;
 
-    private final RestTemplate restTemplate;
+    private final StringRedisTemplate redisTemplate;
+    
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public KbController(KbDocumentRepository kbDocumentRepository, AssistantAuditLogRepository logRepository) {
+    public KbController(KbDocumentRepository kbDocumentRepository, AssistantAuditLogRepository logRepository, StringRedisTemplate redisTemplate) {
         this.kbDocumentRepository = kbDocumentRepository;
         this.logRepository = logRepository;
-        
-        org.springframework.http.client.SimpleClientHttpRequestFactory factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(300000); // 5 minutes
-        factory.setReadTimeout(300000);    // 5 minutes
-        this.restTemplate = new RestTemplate(factory);
+        this.redisTemplate = redisTemplate;
     }
 
 //    private static final String UPLOAD_DIR = "data/uploads";
     private static final String UPLOAD_DIR = System.getProperty("user.dir") + File.separator + "data" + File.separator + "uploads";
-    private static final String FASTAPI_INGEST_URL = "http://127.0.0.1:8000/internal/rag/ingest";
 
     @PostMapping("/upload")
     public Result<KbDocument> uploadDocument(@RequestParam("file") MultipartFile file) {
@@ -109,24 +104,21 @@ public class KbController {
             log.setCreateTime(new Date());
             logRepository.save(log);
 
-            // 异步调用 FastAPI 的 ingest 接口
+            // 将解析任务发送到 Redis 消息队列
             CompletableFuture.runAsync(() -> {
                 try {
-                    HttpHeaders headers = new HttpHeaders();
-                    headers.setContentType(MediaType.APPLICATION_JSON);
+                    Map<String, Object> message = new HashMap<>();
+                    message.put("documentId", document.getId());
+                    message.put("filePath", absolutePath);
+                    String jsonMessage = objectMapper.writeValueAsString(message);
                     
-                    Map<String, Object> requestBody = new HashMap<>();
-                    requestBody.put("documentId", document.getId());
-                    requestBody.put("filePath", absolutePath);
-                    
-                    HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
-                    restTemplate.postForObject(FASTAPI_INGEST_URL, request, String.class);
+                    // 推送到 Redis 队列
+                    redisTemplate.opsForList().rightPush("rag_parse_queue", jsonMessage);
                 } catch (Exception e) {
-                    System.err.println("调用 FastAPI 解析接口失败: " + e.getMessage());
+                    System.err.println("发送任务到 Redis 失败: " + e.getMessage());
                     e.printStackTrace();
-                    // 这里可以更新状态为 FAILED，但需要新起一个事务或直接保存
                     document.setStatus("FAILED");
-                    document.setParseMessage("调用解析接口失败: " + e.getMessage());
+                    document.setParseMessage("任务入队失败: " + e.getMessage());
                     kbDocumentRepository.save(document);
                 }
             });

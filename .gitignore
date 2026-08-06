@@ -22,3 +22,4 @@ deploy/.env.*
 *.log
 
 data/
+ai-service/venv/

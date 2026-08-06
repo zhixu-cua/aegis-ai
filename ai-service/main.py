@@ -1,12 +1,17 @@
+import asyncio
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from api.routes import health, chat, kb
+from api.redis_worker import listen_redis_queue
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # TODO: Initialize connections to PostgreSQL, Redis, MinIO, Ollama here
+    # Initialize connections to PostgreSQL, Redis, MinIO, Ollama here
+    # Start Redis listener task
+    task = asyncio.create_task(listen_redis_queue())
     yield
-    # TODO: Close connections here
+    # Close connections here
+    task.cancel()
 
 app = FastAPI(title="售后助手 AI 服务", lifespan=lifespan)
 
