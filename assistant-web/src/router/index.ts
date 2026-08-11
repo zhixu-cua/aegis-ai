@@ -1,30 +1,42 @@
 import { createRouter, createWebHistory, type RouteRecordRaw, type NavigationGuardNext, type RouteLocationNormalized } from 'vue-router';
 import Login from '../views/Login.vue';
 import Chat from '../views/Chat.vue';
-import KnowledgeBase from '../views/KnowledgeBase.vue';
+import KnowledgeManage from '../views/KnowledgeManage.vue';
+import KnowledgeDocumentList from '../views/KnowledgeDocumentList.vue';
+import MainLayout from '../layout/MainLayout.vue';
 
 const routes: RouteRecordRaw[] = [
   {
     path: '/',
-    redirect: '/chat'
+    component: MainLayout,
+    meta: { requiresAuth: true },
+    children: [
+      {
+        path: '',
+        redirect: '/chat'
+      },
+      {
+        path: 'chat',
+        name: 'Chat',
+        component: Chat
+      },
+      {
+        path: 'kb',
+        name: 'KnowledgeBase',
+        component: KnowledgeManage
+      },
+      {
+        path: 'kb-docs',
+        name: 'KnowledgeDocumentList',
+        component: KnowledgeDocumentList
+      }
+    ]
   },
   {
     path: '/login',
     name: 'Login',
     component: Login,
     meta: { requiresAuth: false }
-  },
-  {
-    path: '/chat',
-    name: 'Chat',
-    component: Chat,
-    meta: { requiresAuth: true }
-  },
-  {
-    path: '/kb',
-    name: 'KnowledgeBase',
-    component: KnowledgeBase,
-    meta: { requiresAuth: true }
   }
 ];
 

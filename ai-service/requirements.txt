@@ -5,3 +5,7 @@ asyncpg
 redis
 minio
 psycopg2-binary
+watchdog
+httpx
+ollama
+cos-python-sdk-v5

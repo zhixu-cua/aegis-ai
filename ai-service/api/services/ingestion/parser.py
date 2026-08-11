@@ -1,10 +1,55 @@
+"""
+文档解析器模块
+支持多种文档格式的文本提取
+"""
+
 import os
-import warnings
+import re
 import threading
+import warnings
+from pathlib import Path
+from typing import Optional
 
-from paddleocr import PaddleOCR
 
-def parse_txt(file_path: str) -> str:
+def parse_document(file_path: str) -> Optional[str]:
+    """
+    解析文档，提取纯文本内容
+    
+    支持格式：txt, md, pdf, docx, doc, xlsx, xls, csv, png, jpg, jpeg, html
+    """
+    ext = Path(file_path).suffix.lower()
+    
+    if ext in ('.html', '.htm'):
+        return _parse_html(file_path)
+    
+    try:
+        if ext in ['.txt', '.md']:
+            return _parse_txt(file_path)
+        elif ext == '.pdf':
+            return _parse_pdf(file_path)
+        elif ext == '.docx':
+            return _parse_docx(file_path)
+        elif ext == '.doc':
+            return _parse_doc(file_path)
+        elif ext in ['.xls', '.xlsx']:
+            return _parse_excel(file_path)
+        elif ext == '.csv':
+            return _parse_csv(file_path)
+        elif ext in ['.png', '.jpg', '.jpeg']:
+            return _parse_image(file_path)
+        else:
+            # 不支持的格式，尝试按普通文本文件兜底读取
+            return _parse_txt_fallback(file_path)
+    except Exception as e:
+        print(f"Failed to parse document {file_path}: {e}")
+        # 异常兜底
+        try:
+            return _parse_txt_fallback(file_path)
+        except Exception:
+            return None
+
+
+def _parse_txt(file_path: str) -> str:
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             return f.read()
@@ -12,7 +57,36 @@ def parse_txt(file_path: str) -> str:
         with open(file_path, "r", encoding="gbk") as f:
             return f.read()
 
-def parse_pdf(file_path: str) -> str:
+
+def _parse_txt_fallback(file_path: str) -> str:
+    """普通文本兜底读取"""
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            return f.read()
+    except Exception:
+        with open(file_path, 'r', encoding='gbk', errors='ignore') as f:
+            return f.read()
+
+
+def _parse_html(file_path: str) -> str:
+    """解析 HTML 文件（保留原有实现）"""
+    try:
+        from bs4 import BeautifulSoup
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            soup = BeautifulSoup(f.read(), 'html.parser')
+        # 移除 script 和 style 标签
+        for script in soup(["script", "style"]):
+            script.decompose()
+        text = soup.get_text()
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = '\n'.join(chunk for chunk in chunks if chunk)
+        return text
+    except ImportError:
+        return None
+
+
+def _parse_pdf(file_path: str) -> str:
     try:
         import pdfplumber
     except ImportError:
@@ -25,7 +99,6 @@ def parse_pdf(file_path: str) -> str:
             
             # 如果当前页提取不到文本，或者文本极少（<20字符），判定为扫描件或纯图片页
             if not page_text or len(page_text.strip()) < 20:
-                import os
                 import tempfile
                 try:
                     import fitz  # PyMuPDF
@@ -45,7 +118,7 @@ def parse_pdf(file_path: str) -> str:
                 
                 try:
                     # 调用下方已有的 parse_image 函数对图片进行 OCR 识别
-                    ocr_text = parse_image(temp_img_path)
+                    ocr_text = _parse_image(temp_img_path)
                     if ocr_text:
                         text += ocr_text + "\n\n"
                 finally:
@@ -67,7 +140,8 @@ def parse_pdf(file_path: str) -> str:
                 text += "\n"
     return text
 
-def parse_docx(file_path: str) -> str:
+
+def _parse_docx(file_path: str) -> str:
     try:
         from docx import Document
         doc = Document(file_path)
@@ -84,12 +158,12 @@ def parse_docx(file_path: str) -> str:
     except ImportError:
         raise Exception("缺少 python-docx 库，请执行 pip install python-docx")
 
-def parse_doc(file_path: str) -> str:
+
+def _parse_doc(file_path: str) -> str:
     """
     处理旧版 .doc 文件：通过 win32com 调用 Windows 系统的 Word 将其转换为临时 .docx，
     然后复用 parse_docx 逻辑，从而完美保留原有的段落和表格 Markdown 结构。
     """
-    import os
     import tempfile
     try:
         import win32com.client
@@ -116,7 +190,7 @@ def parse_doc(file_path: str) -> str:
         word.Quit()
         
         # 复用 parse_docx 以提取文本和表格 Markdown
-        return parse_docx(temp_docx_path)
+        return _parse_docx(temp_docx_path)
     except Exception as e:
         raise Exception(f"解析 .doc 失败（需确保本机已安装 Microsoft Word，且文件未被 Office 信任中心拦截）。详细错误: {str(e)}")
     finally:
@@ -128,7 +202,8 @@ def parse_doc(file_path: str) -> str:
                 pass
         pythoncom.CoUninitialize()
 
-def parse_excel(file_path: str) -> str:
+
+def _parse_excel(file_path: str) -> str:
     try:
         import pandas as pd
         # Read all sheets, works for both .xlsx and .xls (if xlrd is installed)
@@ -145,10 +220,10 @@ def parse_excel(file_path: str) -> str:
             raise Exception("缺少 tabulate 库，无法将表格转为 Markdown。请执行 pip install tabulate")
         raise Exception(f"缺少解析 Excel 所需的依赖库，请执行 pip install pandas openpyxl tabulate xlrd。详细错误: {str(e)}")
 
-def parse_csv(file_path: str) -> str:
+
+def _parse_csv(file_path: str) -> str:
     try:
         import pandas as pd
-        import os
         # 尝试使用不同的编码读取 CSV
         try:
             df = pd.read_csv(file_path, encoding='utf-8')
@@ -164,6 +239,7 @@ def parse_csv(file_path: str) -> str:
         raise Exception(f"缺少解析 CSV 所需的依赖库，请执行 pip install pandas tabulate。详细错误: {str(e)}")
     except Exception as e:
         raise Exception(f"解析 CSV 失败: {str(e)}")
+
 
 # ---------- 全局 OCR 单例（线程安全） ----------
 _ocr_lock = threading.Lock()
@@ -181,6 +257,11 @@ def _get_ocr(use_angle_cls: bool = True, lang: str = "ch"):
                 os.environ.setdefault('FLAGS_use_onednn', '0')
                 os.environ.setdefault('GLOG_v', '0')                 # 只显示错误日志
                 
+                try:
+                    from paddleocr import PaddleOCR
+                except ImportError:
+                    raise Exception("缺少 paddleocr 库，请执行 pip install paddlepaddle paddleocr")
+
                 _ocr_instance = PaddleOCR(
                     use_angle_cls=use_angle_cls,
                     lang=lang,
@@ -189,7 +270,8 @@ def _get_ocr(use_angle_cls: bool = True, lang: str = "ch"):
                 )
     return _ocr_instance
 
-def parse_image(
+
+def _parse_image(
     file_path: str,
     lang: str = "ch",
     use_angle_cls: bool = True,
@@ -222,24 +304,3 @@ def parse_image(
             text += line_text + "\n"
         print(f"文本: {text}")
     return text.strip()
-
-def parse_document_content(file_path: str) -> str:
-    ext = file_path.split('.')[-1].lower()
-    
-    if ext in ['txt', 'md']:
-        return parse_txt(file_path)
-    elif ext == 'pdf':
-        return parse_pdf(file_path)
-    elif ext == 'docx':
-        return parse_docx(file_path)
-    elif ext == 'doc':
-        return parse_doc(file_path)
-    elif ext in ['xls', 'xlsx']:
-        return parse_excel(file_path)
-    elif ext == 'csv':
-        return parse_csv(file_path)
-    elif ext in ['png', 'jpg', 'jpeg']:
-        return parse_image(file_path)
-    else:
-        raise ValueError(f"不支持的文件格式: {ext}")
-

@@ -5,7 +5,7 @@ import asyncpg
 import asyncio
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from api.utils.parsers import parse_document_content
+from api.services.ingestion.parser import parse_document
 
 router = APIRouter()
 
@@ -25,7 +25,7 @@ async def _process(document_id: int, file_path: str):
         )
         
         # 多模态文件解析
-        text = parse_document_content(file_path)
+        text = parse_document(file_path)
         
         if not text or not text.strip():
             raise Exception("文件内容为空或无法提取文本")

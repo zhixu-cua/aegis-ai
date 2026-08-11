@@ -118,3 +118,30 @@ CREATE TABLE IF NOT EXISTS assistant_audit_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_assistant_audit_log_user_time ON assistant_audit_log (user_id, create_time DESC);
+
+CREATE TABLE IF NOT EXISTS kb_datasource (
+  id bigserial PRIMARY KEY,
+  name varchar(100) NOT NULL,
+  source_type varchar(20) NOT NULL,
+  source_config jsonb NOT NULL,
+  sync_frequency varchar(20) NOT NULL DEFAULT 'realtime',
+  source_rank integer NOT NULL DEFAULT 5,
+  status varchar(20) NOT NULL DEFAULT 'active',
+  tenant_id varchar(50),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE kb_document 
+ADD COLUMN IF NOT EXISTS file_hash varchar(64),
+ADD COLUMN IF NOT EXISTS file_size bigint,
+ADD COLUMN IF NOT EXISTS chunk_count integer DEFAULT 0,
+ADD COLUMN IF NOT EXISTS processed_at timestamptz,
+ADD COLUMN IF NOT EXISTS datasource_id bigint REFERENCES kb_datasource(id) ON DELETE SET NULL;
+
+ALTER TABLE kb_chunk
+ADD COLUMN IF NOT EXISTS datasource_id bigint REFERENCES kb_datasource(id) ON DELETE SET NULL,
+ADD COLUMN IF NOT EXISTS is_deleted boolean DEFAULT false,
+ADD COLUMN IF NOT EXISTS version integer DEFAULT 1;
+
+

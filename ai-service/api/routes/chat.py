@@ -8,6 +8,7 @@ import math
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from typing import Optional
 from pydantic import BaseModel
 
 try:
@@ -32,6 +33,7 @@ router = APIRouter()
 
 class QueryRequest(BaseModel):
     question: str
+    datasourceId: Optional[int] = None
 
 # 简单的 BM25 实现
 class SimpleBM25:
@@ -128,16 +130,25 @@ def rag_query(request: QueryRequest):
             try:
                 # 获取所有 chunks 及其向量得分 (1 - 距离 = 相似度)
                 # 可调参数: LIMIT 数量，如果库特别大，这里可以限制候选集大小
-                rows = await conn.fetch(
-                    """
-                    SELECT id, chunk_text, 
-                           1 - (embedding <=> $1::vector) AS vector_score
-                    FROM kb_chunk
+                # 构造过滤条件
+                condition = ""
+                params = [str(question_embedding)]
+                if request.datasourceId is not None:
+                    # 使用 datasourceId 过滤，需要关联 kb_document 甚至直接加条件，不过这里需要查 chunk，关联 doc
+                    condition = "WHERE doc.datasource_id = $2"
+                    params.append(request.datasourceId)
+                    
+                query = f"""
+                    SELECT chunk.id, chunk.chunk_text, 
+                           1 - (chunk.embedding <=> $1::vector) AS vector_score
+                    FROM kb_chunk chunk
+                    { 'JOIN kb_document doc ON chunk.document_id = doc.id' if condition else '' }
+                    {condition}
                     ORDER BY vector_score DESC
                     LIMIT 200
-                    """,
-                    str(question_embedding)
-                )
+                """
+                
+                rows = await conn.fetch(query, *params)
                 
                 if not rows:
                     return []

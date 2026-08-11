@@ -4,6 +4,7 @@ public class ChatRequest {
 
     private String question;
     private Long sessionId;
+    private Long datasourceId;
 
     public String getQuestion() {
         return question;
@@ -19,5 +20,13 @@ public class ChatRequest {
 
     public void setSessionId(Long sessionId) {
         this.sessionId = sessionId;
+    }
+
+    public Long getDatasourceId() {
+        return datasourceId;
+    }
+
+    public void setDatasourceId(Long datasourceId) {
+        this.datasourceId = datasourceId;
     }
 }

@@ -2,6 +2,14 @@ server:
   port: 8082
 
 spring:
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
   servlet:
     multipart:
       max-file-size: 50MB
@@ -17,6 +25,11 @@ spring:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASS:aegis123}
+
+logging:
+  charset:
+    console: UTF-8
+    file: UTF-8
 
 ############## Sa-Token 配置 (文档: https://sa-token.cc) ##############
 sa-token: 

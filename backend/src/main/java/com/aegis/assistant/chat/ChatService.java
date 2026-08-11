@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -222,10 +223,12 @@ public class ChatService {
         return sessionRepository.save(session);
     }
 
+    @Transactional
     public void deleteSession(Long userId, Long sessionId) {
         AssistantSession session = sessionRepository.findById(sessionId).orElse(null);
         if (session != null && session.getUserId().equals(userId)) {
-            messageRepository.deleteAll(messageRepository.findBySessionIdOrderByMessageTimeAsc(sessionId));
+            // PostgreSQL 表结构中已配置 ON DELETE CASCADE，
+            // 直接删除 session 即可级联删除关联的 message 及 message_reference
             sessionRepository.delete(session);
         }
     }

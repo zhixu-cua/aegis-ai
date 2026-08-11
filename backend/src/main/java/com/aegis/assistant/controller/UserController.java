@@ -75,5 +75,20 @@ public class UserController {
         return Result.success("当前会话是否登录：" + StpUtil.isLogin());
     }
 
+    @RequestMapping("me")
+    public Result<User> me() {
+        if (!StpUtil.isLogin()) {
+            return Result.error(401, "未登录");
+        }
+        long userId = StpUtil.getLoginIdAsLong();
+        User user = userRepository.findById(userId).orElse(null);
+        if (user != null) {
+            // 不要返回密码
+            user.setPassword(null);
+            return Result.success(user);
+        }
+        return Result.error(404, "用户不存在");
+    }
+
 }
 
