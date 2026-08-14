@@ -53,6 +53,12 @@
             <option value="daily">每天</option>
           </select>
         </div>
+        <div class="form-group checkbox-group" v-if="userStore.role === 'admin'">
+          <label>
+            <input type="checkbox" v-model="form.isShared" />
+            设为共享知识库
+          </label>
+        </div>
       </div>
       <div class="dialog-footer">
         <button class="btn btn-secondary" @click="close">取消</button>
@@ -67,6 +73,9 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import api from '@/api/request'
+import { useUserStore } from '@/stores/user'
+
+const userStore = useUserStore()
 
 const props = defineProps({
   modelValue: Boolean
@@ -86,7 +95,8 @@ const form = ref<any>({
   secretKey: '',
   prefix: '',
   syncFrequency: 'realtime',
-  sourceRank: 5
+  sourceRank: 5,
+  isShared: false
 })
 
 watch(() => props.modelValue, (val) => {
@@ -103,7 +113,8 @@ watch(() => props.modelValue, (val) => {
       secretKey: '',
       prefix: '',
       syncFrequency: 'realtime',
-      sourceRank: 5
+      sourceRank: 5,
+      isShared: false
     }
   }
 })
@@ -147,7 +158,8 @@ const submit = async () => {
       sourceType: form.value.sourceType,
       sourceConfig: JSON.stringify(config),
       syncFrequency: form.value.syncFrequency,
-      sourceRank: form.value.sourceRank
+      sourceRank: form.value.sourceRank,
+      isShared: form.value.isShared
     })
     emit('success')
     close()
@@ -174,11 +186,12 @@ const submit = async () => {
 .dialog {
   background: #fff;
   border-radius: 16px;
-  width: 520px;
+  width: 480px;
   max-width: 90vw;
-  max-height: 80vh;
+  max-height: 85vh;
   display: flex;
   flex-direction: column;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.1);
 }
 
 .dialog-header {
@@ -212,6 +225,15 @@ const submit = async () => {
   flex: 1;
 }
 
+/* 隐藏滚动条 */
+.dialog-body::-webkit-scrollbar {
+  display: none;
+}
+.dialog-body {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 .dialog-body .form-group {
   margin-bottom: 16px;
 }
@@ -227,10 +249,38 @@ const submit = async () => {
 .dialog-body .form-group input,
 .dialog-body .form-group select {
   width: 100%;
-  padding: 8px 12px;
+  padding: 10px 14px;
   border: 1px solid #d0d5dd;
-  border-radius: 6px;
+  border-radius: 8px;
   font-size: 14px;
+  box-sizing: border-box;
+  transition: border-color 0.2s;
+}
+
+.dialog-body .form-group input:focus,
+.dialog-body .form-group select:focus {
+  outline: none;
+  border-color: #4f6ef7;
+  box-shadow: 0 0 0 3px rgba(79, 110, 247, 0.1);
+}
+
+.checkbox-group {
+  margin-top: 20px;
+}
+
+.checkbox-group label {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-weight: 400 !important;
+}
+
+.checkbox-group input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
 }
 
 .dialog-footer {
@@ -242,11 +292,13 @@ const submit = async () => {
 }
 
 .btn-secondary {
-  padding: 8px 20px;
+  padding: 10px 24px;
   background: #f5f7fa;
   border: 1px solid #d0d5dd;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
 }
 
 .btn-secondary:hover {
@@ -254,12 +306,14 @@ const submit = async () => {
 }
 
 .btn-primary {
-  padding: 8px 20px;
+  padding: 10px 24px;
   background: #4f6ef7;
   color: #fff;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
 }
 
 .btn-primary:hover:not(:disabled) {

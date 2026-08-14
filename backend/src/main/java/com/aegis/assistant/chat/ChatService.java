@@ -58,6 +58,8 @@ public class ChatService {
     public ChatResponse chat(ChatRequest request) {
         long userId = StpUtil.getLoginIdAsLong();
         Long sessionId = request.getSessionId();
+        
+        request.setTenantId(String.valueOf(userId));
 
         if (sessionId == null) {
             AssistantSession session = createSession(userId, "新对话");
@@ -122,6 +124,8 @@ public class ChatService {
     public SseEmitter chatStream(ChatRequest request) {
         long userId = StpUtil.getLoginIdAsLong();
         Long sessionId = request.getSessionId();
+        
+        request.setTenantId(String.valueOf(userId));
 
         if (sessionId == null) {
             AssistantSession session = createSession(userId, "新对话");

@@ -9,6 +9,7 @@ public class DatasourceVO {
     private String status;
     private Integer totalDocCount;
     private LocalDateTime lastSyncAt;
+    private Boolean isShared;
 
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
@@ -22,4 +23,6 @@ public class DatasourceVO {
     public void setTotalDocCount(Integer totalDocCount) { this.totalDocCount = totalDocCount; }
     public LocalDateTime getLastSyncAt() { return lastSyncAt; }
     public void setLastSyncAt(LocalDateTime lastSyncAt) { this.lastSyncAt = lastSyncAt; }
+    public Boolean getIsShared() { return isShared; }
+    public void setIsShared(Boolean isShared) { this.isShared = isShared; }
 }

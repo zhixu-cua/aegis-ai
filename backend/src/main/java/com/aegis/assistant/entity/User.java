@@ -14,6 +14,9 @@ public class User {
 
     private String username;
 
+    @Column(unique = true)
+    private String useraccount;
+
     private String password;
 
     private String role;
@@ -38,6 +41,14 @@ public class User {
 
     public void setUsername(String username) {
         this.username = username;
+    }
+
+    public String getUseraccount() {
+        return useraccount;
+    }
+
+    public void setUseraccount(String useraccount) {
+        this.useraccount = useraccount;
     }
 
     public String getPassword() {

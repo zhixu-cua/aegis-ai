@@ -2,16 +2,17 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS sys_user (
   id bigserial PRIMARY KEY,
-  username varchar(50) NOT NULL UNIQUE,
+  username varchar(50) NOT NULL,
+  useraccount varchar(50) NOT NULL UNIQUE,
   password varchar(100) NOT NULL,
   role varchar(20) NOT NULL DEFAULT 'user',
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-INSERT INTO sys_user (username, password, role)
-VALUES ('admin', '123456', 'admin')
-ON CONFLICT (username) DO NOTHING;
+INSERT INTO sys_user (username, useraccount, password, role)
+VALUES ('管理员', 'admin', '123456', 'admin')
+ON CONFLICT (useraccount) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS assistant_config (
   id bigserial PRIMARY KEY,
@@ -128,6 +129,7 @@ CREATE TABLE IF NOT EXISTS kb_datasource (
   source_rank integer NOT NULL DEFAULT 5,
   status varchar(20) NOT NULL DEFAULT 'active',
   tenant_id varchar(50),
+  is_shared boolean DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
