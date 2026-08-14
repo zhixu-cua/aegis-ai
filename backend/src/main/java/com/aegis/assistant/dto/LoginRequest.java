@@ -8,6 +8,7 @@ package com.aegis.assistant.dto;
 public class LoginRequest {
 
     private String username;
+    private String useraccount;
     private String password;
 
     public String getUsername() {
@@ -16,6 +17,14 @@ public class LoginRequest {
 
     public void setUsername(String username) {
         this.username = username;
+    }
+
+    public String getUseraccount() {
+        return useraccount;
+    }
+
+    public void setUseraccount(String useraccount) {
+        this.useraccount = useraccount;
     }
 
     public String getPassword() {

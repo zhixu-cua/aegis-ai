@@ -9,5 +9,6 @@ import java.util.List;
 @Repository
 public interface KbDatasourceRepository extends JpaRepository<KbDatasource, Long> {
     List<KbDatasource> findByTenantId(String tenantId);
+    List<KbDatasource> findByTenantIdOrIsSharedTrue(String tenantId);
     List<KbDatasource> findByStatusAndSyncFrequency(String status, String syncFrequency);
 }

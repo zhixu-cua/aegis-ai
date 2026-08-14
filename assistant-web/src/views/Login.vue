@@ -32,19 +32,19 @@
       </div>
       <div class="login-right">
         <div class="form-header">
-          <h2>{{ isRegister ? '创建账号' : '欢迎回来' }}</h2>
-          <p>{{ isRegister ? '注册以开始使用您的专属 AI 助手' : '请登录以继续访问您的工作台' }}</p>
+          <h2>{{ isRegister ? '创建账号' : (isForgot ? '重置密码' : '欢迎回来') }}</h2>
+          <p>{{ isRegister ? '注册以开始使用您的专属 AI 助手' : (isForgot ? '请输入您的账号和新密码' : '请登录以继续访问您的工作台') }}</p>
         </div>
         
         <form @submit.prevent="handleSubmit" class="login-form">
-          <div class="form-group">
+          <div class="form-group" v-if="isRegister">
             <label for="username">用户名</label>
             <div class="input-wrapper">
               <input 
                 type="text" 
                 id="username" 
                 v-model="username" 
-                placeholder="请输入用户名"
+                placeholder="请输入用户名（用于展示）"
                 required 
                 :class="{ 'has-error': error }"
               />
@@ -52,13 +52,27 @@
           </div>
           
           <div class="form-group">
-            <label for="password">密码</label>
+            <label for="useraccount">账号</label>
+            <div class="input-wrapper">
+              <input 
+                type="text" 
+                id="useraccount" 
+                v-model="useraccount" 
+                placeholder="请输入登录账号"
+                required 
+                :class="{ 'has-error': error }"
+              />
+            </div>
+          </div>
+          
+          <div class="form-group">
+            <label for="password">{{ isForgot ? '新密码' : '密码' }}</label>
             <div class="input-wrapper">
               <input 
                 type="password" 
                 id="password" 
                 v-model="password" 
-                placeholder="请输入密码"
+                :placeholder="isForgot ? '请输入新密码' : '请输入密码'"
                 required 
                 :class="{ 'has-error': error }"
               />
@@ -70,14 +84,25 @@
             {{ error }}
           </div>
           
+          <div class="forgot-link" v-if="!isRegister && !isForgot">
+            <a href="#" @click.prevent="toggleForgot">忘记密码？</a>
+          </div>
+          
           <button type="submit" class="submit-btn" :disabled="loading">
             <span v-if="loading" class="loader"></span>
-            <span v-else>{{ isRegister ? '注册' : '登录' }}</span>
+            <span v-else>{{ isRegister ? '注册' : (isForgot ? '修改密码' : '登录') }}</span>
           </button>
           
           <div class="toggle-mode">
-            <span v-if="!isRegister">还没有账号？ <a href="#" @click.prevent="toggleMode">立即注册</a></span>
-            <span v-else>已有账号？ <a href="#" @click.prevent="toggleMode">立即登录</a></span>
+            <template v-if="isForgot">
+              <span>记起密码了？ <a href="#" @click.prevent="toggleForgot">返回登录</a></span>
+            </template>
+            <template v-else-if="!isRegister">
+              <span>还没有账号？ <a href="#" @click.prevent="toggleMode">立即注册</a></span>
+            </template>
+            <template v-else>
+              <span>已有账号？ <a href="#" @click.prevent="toggleMode">立即登录</a></span>
+            </template>
           </div>
         </form>
       </div>
@@ -91,17 +116,29 @@ import { useRouter } from 'vue-router';
 import request from '../api/request';
 
 const username = ref('');
+const useraccount = ref('');
 const password = ref('');
 const error = ref('');
 const loading = ref(false);
 const isRegister = ref(false);
+const isForgot = ref(false);
 const registerSuccess = ref(false);
 const router = useRouter();
 
 const toggleMode = () => {
   isRegister.value = !isRegister.value;
+  isForgot.value = false;
   error.value = '';
   username.value = '';
+  useraccount.value = '';
+  password.value = '';
+};
+
+const toggleForgot = () => {
+  isForgot.value = !isForgot.value;
+  isRegister.value = false;
+  error.value = '';
+  useraccount.value = '';
   password.value = '';
 };
 
@@ -109,13 +146,15 @@ const toggleMode = () => {
 const backToLogin = () => {
   registerSuccess.value = false;
   isRegister.value = false;
-  password.value = ''; // 清空密码让用户重输，保留用户名
+  isForgot.value = false;
+  password.value = ''; // 清空密码让用户重输，保留账号
 };
 
 // 注册成功后直接进入系统（自动执行一次登录）
 const enterSystem = async () => {
   registerSuccess.value = false;
   isRegister.value = false;
+  isForgot.value = false;
   await handleSubmit(); 
 };
 
@@ -123,16 +162,30 @@ const handleSubmit = async () => {
   error.value = '';
   loading.value = true;
   try {
-    const endpoint = isRegister.value ? '/user/doRegister' : '/user/doLogin';
-    const res: any = await request.post(endpoint, {
-      username: username.value,
+    let endpoint = '';
+    let payload: any = {
+      useraccount: useraccount.value,
       password: password.value
-    });
+    };
+    
+    if (isRegister.value) {
+      endpoint = '/user/doRegister';
+      payload.username = username.value;
+    } else if (isForgot.value) {
+      endpoint = '/user/resetPassword';
+    } else {
+      endpoint = '/user/doLogin';
+    }
+    
+    const res: any = await request.post(endpoint, payload);
     
     if (res.code === 200) {
       if (isRegister.value) {
         // 注册成功后，显示成功交互界面
         registerSuccess.value = true;
+      } else if (isForgot.value) {
+        alert('密码重置成功，请使用新密码登录');
+        toggleForgot();
       } else {
         // 登录成功
         if (res.data && res.data.tokenValue) {
@@ -145,11 +198,11 @@ const handleSubmit = async () => {
     } else {
       // 准确展示后端返回的错误信息（如“用户名已存在”、“用户名或密码不能为空”等）
       // 如果后端没返回，才给出一个默认兜底提示
-      error.value = res.msg || res.message || (isRegister.value ? '注册失败，请检查输入' : '登录失败，请检查账号密码');
+      error.value = res.msg || res.message || (isRegister.value ? '注册失败，请检查输入' : '操作失败，请检查账号密码');
     }
   } catch (err: any) {
     // 捕获网络异常或服务端 500 等错误，并尽可能提取准确的信息
-    error.value = err.response?.data?.msg || err.response?.data?.message || err.message || (isRegister.value ? '注册请求失败，请检查网络或联系管理员' : '登录请求失败，请检查网络或联系管理员');
+    error.value = err.response?.data?.msg || err.response?.data?.message || err.message || (isRegister.value ? '请求失败，请检查网络或联系管理员' : '请求失败，请检查网络或联系管理员');
   } finally {
     loading.value = false;
   }
@@ -319,6 +372,22 @@ const handleSubmit = async () => {
   padding: 12px;
   border-radius: 8px;
   border: 1px solid #ffccc7;
+}
+
+.forgot-link {
+  text-align: right;
+  font-size: 0.9rem;
+  margin-top: -10px;
+}
+
+.forgot-link a {
+  color: #666;
+  text-decoration: none;
+  transition: color 0.3s;
+}
+
+.forgot-link a:hover {
+  color: #42b983;
 }
 
 .submit-btn {

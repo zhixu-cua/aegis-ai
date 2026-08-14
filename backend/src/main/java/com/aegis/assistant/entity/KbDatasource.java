@@ -51,6 +51,9 @@ public class KbDatasource {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
     
+    @Column(name = "is_shared")
+    private Boolean isShared = false;
+    
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
@@ -88,4 +91,6 @@ public class KbDatasource {
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+    public Boolean getIsShared() { return isShared; }
+    public void setIsShared(Boolean isShared) { this.isShared = isShared; }
 }

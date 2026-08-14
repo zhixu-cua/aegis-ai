@@ -11,6 +11,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import com.aegis.assistant.repository.UserRepository;
+import com.aegis.assistant.entity.User;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,12 +29,14 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
     private final com.aegis.assistant.repository.KbDocumentRepository documentRepository;
     private final RedisStreamUtil redisStreamUtil;
     private final SaTokenService saTokenService;
+    private final UserRepository userRepository;
     
-    public KnowledgeBaseServiceImpl(KbDatasourceRepository datasourceRepository, com.aegis.assistant.repository.KbDocumentRepository documentRepository, RedisStreamUtil redisStreamUtil, SaTokenService saTokenService) {
+    public KnowledgeBaseServiceImpl(KbDatasourceRepository datasourceRepository, com.aegis.assistant.repository.KbDocumentRepository documentRepository, RedisStreamUtil redisStreamUtil, SaTokenService saTokenService, UserRepository userRepository) {
         this.datasourceRepository = datasourceRepository;
         this.documentRepository = documentRepository;
         this.redisStreamUtil = redisStreamUtil;
         this.saTokenService = saTokenService;
+        this.userRepository = userRepository;
     }
 
     @Override
@@ -55,6 +59,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         datasource.setSourceRank(dto.getSourceRank());
         datasource.setStatus("inactive");
         datasource.setTenantId(tenantId);
+        datasource.setIsShared(dto.getIsShared() != null ? dto.getIsShared() : false);
         
         KbDatasource saved = datasourceRepository.save(datasource);
         return saved.getId();
@@ -165,8 +170,14 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
     @Override
     public List<DatasourceVO> listDatasources() {
         String tenantId = saTokenService.getCurrentTenantId();
-        return datasourceRepository.findByTenantId(tenantId)
-            .stream()
+        User user = userRepository.findById(Long.parseLong(tenantId)).orElse(null);
+        List<KbDatasource> sources;
+        if (user != null && "admin".equalsIgnoreCase(user.getRole())) {
+            sources = datasourceRepository.findByTenantIdOrIsSharedTrue(tenantId);
+        } else {
+            sources = datasourceRepository.findByTenantId(tenantId);
+        }
+        return sources.stream()
             .map(this::toVO)
             .collect(Collectors.toList());
     }
@@ -220,6 +231,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         vo.setStatus(ds.getStatus());
         vo.setTotalDocCount(ds.getTotalDocCount());
         vo.setLastSyncAt(ds.getLastSyncAt());
+        vo.setIsShared(ds.getIsShared() != null ? ds.getIsShared() : false);
         return vo;
     }
     

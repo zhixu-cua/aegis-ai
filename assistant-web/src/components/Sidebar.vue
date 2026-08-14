@@ -46,17 +46,44 @@
         </div>
         <div class="kb-list" v-show="kbExpanded">
           <div v-if="loading" class="kb-item empty">加载中...</div>
-          <div v-else-if="datasources.length === 0" class="kb-item empty">暂无知识库</div>
+          <div v-else-if="myDatasources.length === 0" class="kb-item empty">暂无知识库</div>
           <div 
             v-else
-            v-for="(ds, index) in datasources" 
+            v-for="(ds, index) in myDatasources" 
             :key="ds.id" 
             class="kb-item"
             :title="ds.name"
             @click="goToKbDetail(ds.id)"
             style="cursor: pointer;"
           >
-            <span class="tree-line">{{ index === datasources.length - 1 ? '└─' : '├─' }}</span>
+            <span class="tree-line">{{ index === myDatasources.length - 1 ? '└─' : '├─' }}</span>
+            <span class="kb-name">{{ ds.name }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 共享知识库 (仅管理员可见) -->
+      <div class="nav-section kb-section mt-10" v-if="!isCollapsed && userStore.role === 'admin'">
+        <div class="kb-header" @click="sharedKbExpanded = !sharedKbExpanded">
+          <div class="kb-header-left">
+            <span class="icon">🌐</span>
+            <span class="text">共享知识库</span>
+          </div>
+          <span class="arrow" :class="{ collapsed: !sharedKbExpanded }">▼</span>
+        </div>
+        <div class="kb-list" v-show="sharedKbExpanded">
+          <div v-if="loading" class="kb-item empty">加载中...</div>
+          <div v-else-if="sharedDatasources.length === 0" class="kb-item empty">暂无共享知识库</div>
+          <div 
+            v-else
+            v-for="(ds, index) in sharedDatasources" 
+            :key="ds.id" 
+            class="kb-item"
+            :title="ds.name"
+            @click="goToKbDetail(ds.id)"
+            style="cursor: pointer;"
+          >
+            <span class="tree-line">{{ index === sharedDatasources.length - 1 ? '└─' : '├─' }}</span>
             <span class="kb-name">{{ ds.name }}</span>
           </div>
         </div>
@@ -114,8 +141,11 @@ const router = useRouter()
 const route = useRoute()
 
 const datasources = ref<any[]>([])
+const myDatasources = computed(() => datasources.value.filter(ds => !ds.isShared))
+const sharedDatasources = computed(() => datasources.value.filter(ds => ds.isShared))
 const loading = ref(false)
 const kbExpanded = ref(true)
+const sharedKbExpanded = ref(true)
 const isCollapsed = ref(false)
 
 // Chat History Grouping

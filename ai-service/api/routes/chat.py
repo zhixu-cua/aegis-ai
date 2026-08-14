@@ -34,6 +34,7 @@ router = APIRouter()
 class QueryRequest(BaseModel):
     question: str
     datasourceId: Optional[int] = None
+    tenantId: Optional[str] = None
 
 # 简单的 BM25 实现
 class SimpleBM25:
@@ -134,15 +135,25 @@ def rag_query(request: QueryRequest):
                 condition = ""
                 params = [str(question_embedding)]
                 if request.datasourceId is not None:
-                    # 使用 datasourceId 过滤，需要关联 kb_document 甚至直接加条件，不过这里需要查 chunk，关联 doc
+                    # 使用 datasourceId 过滤
                     condition = "WHERE doc.datasource_id = $2"
                     params.append(request.datasourceId)
+                elif request.tenantId is not None:
+                    # 如果没有指定 datasourceId，限制查询只能查当前用户上传的、当前用户的知识库以及共享知识库
+                    condition = """
+                    WHERE doc.upload_user_id = $2::bigint 
+                       OR doc.datasource_id IN (
+                           SELECT id FROM kb_datasource 
+                           WHERE tenant_id = $2 OR is_shared = true
+                       )
+                    """
+                    params.append(request.tenantId)
                     
                 query = f"""
                     SELECT chunk.id, chunk.chunk_text, 
                            1 - (chunk.embedding <=> $1::vector) AS vector_score
                     FROM kb_chunk chunk
-                    { 'JOIN kb_document doc ON chunk.document_id = doc.id' if condition else '' }
+                    JOIN kb_document doc ON chunk.document_id = doc.id
                     {condition}
                     ORDER BY vector_score DESC
                     LIMIT 200

@@ -5,6 +5,7 @@ public class ChatRequest {
     private String question;
     private Long sessionId;
     private Long datasourceId;
+    private String tenantId;
 
     public String getQuestion() {
         return question;
@@ -28,5 +29,13 @@ public class ChatRequest {
 
     public void setDatasourceId(Long datasourceId) {
         this.datasourceId = datasourceId;
+    }
+
+    public String getTenantId() {
+        return tenantId;
+    }
+
+    public void setTenantId(String tenantId) {
+        this.tenantId = tenantId;
     }
 }
