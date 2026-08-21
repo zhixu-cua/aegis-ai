@@ -19,6 +19,15 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.stream.Collectors;
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import com.qcloud.cos.COSClient;
+import com.qcloud.cos.ClientConfig;
+import com.qcloud.cos.auth.BasicCOSCredentials;
+import com.qcloud.cos.region.Region;
+import com.qcloud.cos.model.PutObjectRequest;
+import org.springframework.web.multipart.MultipartFile;
 
 @Service
 public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
@@ -210,6 +219,72 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
             documentRepository.delete(doc);
             documentRepository.updateDatasourceCount(datasourceId);
             log.info("触发文档物理删除: document_id={}, file_path={}", documentId, doc.getFilePath());
+        }
+    }
+
+    @Override
+    public void uploadDocument(Long datasourceId, MultipartFile file) {
+        KbDatasource datasource = findAndValidate(datasourceId);
+        if (!"cos".equals(datasource.getSourceType())) {
+            throw new RuntimeException("仅支持上传到 COS 类型的数据源");
+        }
+
+        java.util.Map<String, Object> config = datasource.getSourceConfig();
+        String secretId = (String) config.get("secretId");
+        String secretKey = (String) config.get("secretKey");
+        String regionStr = (String) config.get("region");
+        String bucket = (String) config.get("bucket");
+        String prefix = (String) config.get("prefix");
+
+        if (secretId == null || secretKey == null || regionStr == null || bucket == null) {
+            throw new RuntimeException("COS 配置不完整");
+        }
+
+        if (prefix == null || prefix.isEmpty()) {
+            prefix = "";
+        } else if (!prefix.endsWith("/")) {
+            prefix = prefix + "/";
+        }
+
+        String originalFilename = file.getOriginalFilename();
+        if (originalFilename == null) {
+            originalFilename = "unknown";
+        }
+        
+        // Remove leading slash if any in prefix, for key generation
+        String keyPrefix = prefix.startsWith("/") ? prefix.substring(1) : prefix;
+        String key = keyPrefix + originalFilename;
+
+        File tempFile = null;
+        COSClient cosClient = null;
+        try {
+            tempFile = Files.createTempFile("upload_", originalFilename).toFile();
+            file.transferTo(tempFile);
+
+            BasicCOSCredentials cred = new BasicCOSCredentials(secretId, secretKey);
+            Region region = new Region(regionStr);
+            ClientConfig clientConfig = new ClientConfig(region);
+            cosClient = new COSClient(cred, clientConfig);
+
+            PutObjectRequest putObjectRequest = new PutObjectRequest(bucket, key, tempFile);
+            cosClient.putObject(putObjectRequest);
+            
+            log.info("文件上传到 COS 成功: bucket={}, key={}", bucket, key);
+
+            // 触发解析，相当于强制刷新这个文件
+            // 保持和 COS Key 一致的路径作为 filePath 参数
+            forceRefresh(datasourceId, key);
+
+        } catch (Exception e) {
+            log.error("上传文件到 COS 失败", e);
+            throw new RuntimeException("上传文件失败: " + e.getMessage());
+        } finally {
+            if (cosClient != null) {
+                cosClient.shutdown();
+            }
+            if (tempFile != null && tempFile.exists()) {
+                tempFile.delete();
+            }
         }
     }
     

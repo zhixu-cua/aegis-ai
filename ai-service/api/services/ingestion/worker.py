@@ -170,75 +170,204 @@ class DocumentWorker:
         from .cos import COSConnector
         connector = COSConnector(secret_id, secret_key, region)
         
-        # 确定需要同步的前缀（如果指定的 file_path 不是默认的 prefix，则以 file_path 为准）
-        # 前端传入的 filePath 如果是相对路径，需要拼接到 prefix 后面，或者如果直接是完整 key，就直接用
-        # 为了简化，如果 filePath 存在且不是空，则认为是特定的 key 或子前缀
+        # 确定需要同步的前缀
         sync_prefix = file_path if file_path and file_path != '/' else prefix
         
         print(f"检测到 COS 同步请求，开始拉取: bucket={bucket}, prefix={sync_prefix}")
         
-        # 为了防止下载的文件堆积，使用临时目录
-        # 注意: 每次同步都会下载，实际生产中可以考虑缓存
-        local_dir = os.path.join(tempfile.gettempdir(), f"cos_sync_{datasource_id}")
-        
         try:
             # list_files 会返回匹配前缀的所有文件
-            files = connector.list_files(bucket, sync_prefix)
+            files = await asyncio.to_thread(connector.list_files, bucket, sync_prefix)
             if not files:
-                print(f"COS 找不到匹配的文件: bucket={bucket}, prefix={sync_prefix}")
-                # 尝试直接下载单个文件 (如果 sync_prefix 就是一个具体文件)
-                local_path = os.path.join(local_dir, sync_prefix.lstrip('/'))
-                if connector.download_file(bucket, sync_prefix, local_path):
-                    asyncio.create_task(self._handle_upsert(datasource_id, sync_prefix, local_path))
+                # 尝试作为单文件获取
+                file_info = await asyncio.to_thread(connector.get_file_info, bucket, sync_prefix)
+                if file_info:
+                    files = [file_info]
                 else:
+                    print(f"COS 找不到匹配的文件: bucket={bucket}, prefix={sync_prefix}")
                     await self._notify_progress(datasource_id, sync_prefix, "failed", error="COS 中未找到该文件")
-                return
+                    return
 
-            # 下载所有文件
-            downloaded = connector.sync_prefix(bucket, sync_prefix, local_dir)
-            for local_path in downloaded:
-                # 推算它在 COS 中的 logical_key (这里简化的做法: sync_prefix 会返回相对于 prefix 的路径)
-                # 实际上 sync_prefix 方法的返回值是本地绝对路径。我们需要找到它对应的 logical_key
-                # 从 local_dir 到 local_path 的相对路径
-                rel_path = os.path.relpath(local_path, local_dir)
-                # COS 上的实际 key 是 prefix + rel_path，但这取决于 sync_prefix 的实现逻辑
-                # sync_prefix 中是 key[len(prefix):]，所以
-                logical_key = sync_prefix + '/' + rel_path if not sync_prefix.endswith('/') and rel_path else sync_prefix + rel_path
-                logical_key = logical_key.replace('\\', '/')
+            for file_info in files:
+                key = file_info['key']
+                etag = file_info['etag']
                 
-                asyncio.create_task(self._handle_upsert(datasource_id, logical_key, local_path))
+                # 直接将 COS 的 key 作为逻辑路径
+                logical_key = key
+                
+                # 将该文件的处理加入异步任务，避免阻塞主循环
+                asyncio.create_task(
+                    self._handle_cos_upsert(connector, bucket, key, etag, datasource_id, logical_key)
+                )
         except Exception as e:
             print(f"COS 同步失败: {e}")
             await self._notify_progress(datasource_id, file_path, "failed", error=str(e))
+
+    async def _handle_cos_upsert(self, connector, bucket: str, key: str, etag: str, datasource_id: int, logical_key: str):
+        """处理 COS 单文件的智能同步（基于 ETag 去重，使用阅后即焚的临时文件）"""
+        async with self.semaphore:
+            try:
+                # 1. 检查数据库是否存在且未修改
+                async with self.pg_pool.acquire() as conn:
+                    # 查询同路径的所有文档记录
+                    existing_docs = await conn.fetch(
+                        "SELECT id, file_hash, status FROM kb_document WHERE datasource_id=$1 AND file_path=$2",
+                        datasource_id, logical_key
+                    )
+                    
+                    already_synced = False
+                    for doc in existing_docs:
+                        if doc['file_hash'] == etag and doc['status'] != 'failed':
+                            already_synced = True
+                            break
+                            
+                    if already_synced:
+                        print(f"COS 文件未变化，跳过同步: {logical_key}")
+                        # 顺手清理因过去哈希算法改变产生的同路径旧数据，防止出现重复
+                        for doc in existing_docs:
+                            if doc['file_hash'] != etag:
+                                await conn.execute("DELETE FROM kb_chunk WHERE document_id = $1", doc['id'])
+                                await conn.execute("DELETE FROM kb_document WHERE id = $1", doc['id'])
+                        return
+                    
+                    # 如果需要重新同步，先删除旧版本数据，避免产生相同 file_path 的多条记录
+                    for doc in existing_docs:
+                        await conn.execute("DELETE FROM kb_chunk WHERE document_id = $1", doc['id'])
+                        await conn.execute("DELETE FROM kb_document WHERE id = $1", doc['id'])
+                
+                # 2. 如果不存在或已修改，则下载到阅后即焚的临时文件中
+                import tempfile
+                import os
+                
+                # 获取文件扩展名，以便解析器识别
+                ext = os.path.splitext(key)[1]
+                
+                with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
+                    temp_path = temp_file.name
+                
+                try:
+                    # 下载文件内容到临时路径（异步执行，避免阻塞主线程）
+                    success = await asyncio.to_thread(connector.download_file, bucket, key, temp_path)
+                    if not success:
+                        await self._notify_progress(datasource_id, logical_key, "failed", error="COS 文件下载到内存/临时文件失败")
+                        return
+                    
+                    # 复用原有的处理逻辑（解析 -> 切片 -> 向量化 -> 入库），此时 hash 直接使用 ETag
+                    # 注意：我们这里不需要再调 _handle_upsert，因为那会重复查库和算 hash
+                    
+                    # 3. 解析文档
+                    from .parser import parse_document
+                    content = await asyncio.to_thread(parse_document, temp_path)
+                    if not content or len(content.strip()) < 10:
+                        await self._notify_progress(datasource_id, logical_key, "failed", error="文档内容为空或解析失败")
+                        return
+                    
+                    # 3.5 数据清洗
+                    from .cleaner import clean_text
+                    content = await asyncio.to_thread(clean_text, content)
+                    if not content or len(content.strip()) < 10:
+                        await self._notify_progress(datasource_id, logical_key, "failed", error="文档清洗后内容过少")
+                        return
+                    
+                    # 4. 切片
+                    from .chunker import chunk_text
+                    chunks = await asyncio.to_thread(chunk_text, content)
+                    if not chunks:
+                        await self._notify_progress(datasource_id, logical_key, "failed", error="切片结果为空")
+                        return
+                    
+                    # 5. 生成向量并入库
+                    from .vector_store import upsert_chunks
+                    doc_id = await upsert_chunks(
+                        pool=self.pg_pool,
+                        datasource_id=datasource_id,
+                        file_path=logical_key,
+                        file_hash=etag,  # 直接使用 COS ETag 作为哈希
+                        chunks=chunks
+                    )
+                    
+                    # 6. 更新文档状态
+                    async with self.pg_pool.acquire() as conn:
+                        await conn.execute("""
+                            UPDATE kb_document 
+                            SET status = 'completed', chunk_count = $1, processed_at = NOW(), error_message = NULL
+                            WHERE id = $2
+                        """, len(chunks), doc_id)
+                    
+                    # 7. 推送成功状态
+                    await self._notify_progress(datasource_id, logical_key, "completed", chunk_count=len(chunks))
+                    
+                finally:
+                    # 无论成功失败，确保删除临时文件，释放磁盘空间
+                    if os.path.exists(temp_path):
+                        try:
+                            os.remove(temp_path)
+                        except Exception as e:
+                            print(f"清理临时文件失败 {temp_path}: {e}")
+                            
+            except Exception as e:
+                error_msg = str(e)
+                print(f"处理 COS 文档失败 {logical_key}: {error_msg}")
+                await self._notify_progress(datasource_id, logical_key, "failed", error=error_msg)
+                async with self.pg_pool.acquire() as conn:
+                    await conn.execute("""
+                        UPDATE kb_document SET status = 'failed', error_message = $1, updated_at = NOW()
+                        WHERE datasource_id = $2 AND file_path = $3
+                    """, error_msg[:500], datasource_id, logical_key)
 
     async def _handle_upsert(self, datasource_id: int, logical_path: str, physical_path: str):
         """处理新增/修改：解析 -> 切片 -> 向量化 -> 入库"""
         async with self.semaphore:
             try:
                 # 1. 计算文件哈希
-                file_hash = self._calc_hash(physical_path)
+                file_hash = await asyncio.to_thread(self._calc_hash, physical_path)
                 
-                # 2. 检查是否已处理（去重）
+                # 2. 检查是否已处理（去重及清理旧版本）
                 async with self.pg_pool.acquire() as conn:
-                    existing = await conn.fetchrow(
-                        "SELECT id FROM kb_document WHERE datasource_id=$1 AND file_hash=$2 AND status != 'failed'",
-                        datasource_id, file_hash
+                    existing_docs = await conn.fetch(
+                        "SELECT id, file_hash, status FROM kb_document WHERE datasource_id=$1 AND file_path=$2",
+                        datasource_id, logical_path
                     )
-                    if existing:
+                    
+                    already_synced = False
+                    for doc in existing_docs:
+                        if doc['file_hash'] == file_hash and doc['status'] != 'failed':
+                            already_synced = True
+                            break
+                            
+                    if already_synced:
                         print(f"文件未变化，跳过: {logical_path}")
+                        # 清理同路径旧哈希的垃圾数据
+                        for doc in existing_docs:
+                            if doc['file_hash'] != file_hash:
+                                await conn.execute("DELETE FROM kb_chunk WHERE document_id = $1", doc['id'])
+                                await conn.execute("DELETE FROM kb_document WHERE id = $1", doc['id'])
                         return
+                        
+                    # 如果有修改，删除旧版本，避免产生重复记录
+                    for doc in existing_docs:
+                        await conn.execute("DELETE FROM kb_chunk WHERE document_id = $1", doc['id'])
+                        await conn.execute("DELETE FROM kb_document WHERE id = $1", doc['id'])
                 
                 # 3. 解析文档
                 from .parser import parse_document
-                content = parse_document(physical_path)
+                content = await asyncio.to_thread(parse_document, physical_path)
                 if not content or len(content.strip()) < 10:
                     await self._notify_progress(datasource_id, logical_path, "failed", 
                                                  error="文档内容为空或解析失败")
                     return
                 
+                # 3.5 数据清洗
+                from .cleaner import clean_text
+                content = await asyncio.to_thread(clean_text, content)
+                if not content or len(content.strip()) < 10:
+                    await self._notify_progress(datasource_id, logical_path, "failed", 
+                                                 error="文档清洗后内容过少")
+                    return
+                
                 # 4. 切片
                 from .chunker import chunk_text
-                chunks = chunk_text(content)
+                chunks = await asyncio.to_thread(chunk_text, content)
                 if not chunks:
                     await self._notify_progress(datasource_id, logical_path, "failed", 
                                                  error="切片结果为空")

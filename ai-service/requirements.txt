@@ -9,3 +9,6 @@ watchdog
 httpx
 ollama
 cos-python-sdk-v5
+jieba
+# 可选：启用交叉编码器重排序（体积较大，需要 torch，可自行决定是否安装）
+# sentence-transformers

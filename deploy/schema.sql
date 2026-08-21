@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS kb_chunk (
   chunk_index integer NOT NULL,
   chunk_text text NOT NULL,
   token_count integer,
-  embedding vector(768),
+  embedding vector(1024),
   created_time timestamptz NOT NULL DEFAULT now()
 );
 

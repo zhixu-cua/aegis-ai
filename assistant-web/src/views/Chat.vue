@@ -62,11 +62,11 @@
           ></textarea>
           
           <div class="input-actions">
-            <label class="action-btn upload-btn" title="上传附件">
-              <input type="file" @change="handleFileSelect" accept=".txt,.md,.pdf,.docx,.doc,.xlsx,.xls,.png,.jpg" hidden multiple />
+            <!-- <label class="action-btn upload-btn" title="支持格式: .txt, .md, .pdf, .docx, .doc, .xlsx, .xls, .csv, .png, .jpg, .jpeg, .html, .htm">
+              <input type="file" @change="handleFileSelect" accept=".txt,.md,.pdf,.docx,.doc,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.html,.htm" hidden multiple />
               📎 附件
-            </label>
-            <button class="action-btn send-btn" @click="sendMessage" :disabled="loading || (!inputMsg.trim() && selectedFiles.length === 0)">
+            </label> -->
+            <button class="action-btn send-btn" style="margin-left: auto;" @click="sendMessage" :disabled="loading || (!inputMsg.trim() && selectedFiles.length === 0)">
               发送
             </button>
           </div>
@@ -112,7 +112,11 @@ const handleFileSelect = (event: Event) => {
   const target = event.target as HTMLInputElement;
   if (target.files && target.files.length > 0) {
     const filesArray = Array.from(target.files);
-    const validFiles = filesArray.filter(file => file.name.endsWith('.txt') || file.name.endsWith('.md'));
+    const validExtensions = ['.txt', '.md', '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.csv', '.png', '.jpg', '.jpeg', '.html', '.htm'];
+    const validFiles = filesArray.filter(file => {
+      const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+      return validExtensions.includes(ext);
+    });
     selectedFiles.value.push(...validFiles);
     target.value = ''; 
   }
@@ -154,9 +158,12 @@ const sendMessage = async () => {
       const formData = new FormData();
       formData.append('file', file);
       try {
-        await request.post('/kb/upload', formData, {
+        const res: any = await request.post('/kb/upload', formData, {
           headers: { 'Content-Type': 'multipart/form-data' }
         });
+        if (res.code !== 200) {
+           console.error(`上传文件 ${file.name} 失败:`, res.message);
+        }
       } catch (err) {
         console.error('Failed to upload file to KB', err);
       }

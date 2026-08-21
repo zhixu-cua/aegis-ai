@@ -55,6 +55,20 @@ class COSConnector:
         
         return files
     
+    def get_file_info(self, bucket: str, key: str) -> Optional[Dict[str, Any]]:
+        """获取单个文件的信息"""
+        try:
+            response = self.client.head_object(Bucket=bucket, Key=key)
+            return {
+                'key': key,
+                'size': int(response['Content-Length']),
+                'last_modified': response['Last-Modified'],
+                'etag': response['ETag'].strip('"')
+            }
+        except Exception as e:
+            print(f"获取 COS 文件信息失败 {key}: {e}")
+            return None
+    
     def download_file(self, bucket: str, key: str, local_path: str) -> bool:
         """下载单个文件到本地"""
         try:
@@ -71,6 +85,20 @@ class COSConnector:
             print(f"下载失败 {key}: {e}")
             return False
     
+    def upload_file(self, bucket: str, local_path: str, key: str) -> bool:
+        """上传本地文件到 COS"""
+        try:
+            self.client.upload_file(
+                Bucket=bucket,
+                LocalFilePath=local_path,
+                Key=key,
+                EnableMD5=False
+            )
+            return True
+        except Exception as e:
+            print(f"上传失败 {key}: {e}")
+            return False
+
     def sync_prefix(self, bucket: str, prefix: str, local_dir: str) -> List[str]:
         """
         同步 COS 前缀下的所有文件到本地目录

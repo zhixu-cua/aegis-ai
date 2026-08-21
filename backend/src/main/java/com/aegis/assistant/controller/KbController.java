@@ -92,6 +92,8 @@ public class KbController {
             document.setStoragePath(absolutePath);
             document.setStatus("PENDING");
             document.setUploadUserId(userId);
+            // 对话框中临时上传的文档，没有绑定到特定的知识库，设为 0 作为占位符
+            document.setDatasourceId(0L); 
             
             kbDocumentRepository.save(document);
 

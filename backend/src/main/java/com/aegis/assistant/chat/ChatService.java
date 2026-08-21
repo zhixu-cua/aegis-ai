@@ -5,9 +5,12 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestClientException;
@@ -27,16 +30,21 @@ import cn.dev33.satoken.stp.StpUtil;
 @Service
 public class ChatService {
 
+    private static final Logger log = LoggerFactory.getLogger(ChatService.class);
+
     private final RestTemplate restTemplate;
     private final AssistantSessionRepository sessionRepository;
     private final AssistantMessageRepository messageRepository;
     private final AssistantAuditLogRepository auditLogRepository;
+    private final ThreadPoolTaskExecutor streamExecutor;
 
     @Autowired
-    public ChatService(AssistantMessageRepository messageRepository, AssistantSessionRepository sessionRepository, AssistantAuditLogRepository auditLogRepository) {
+    public ChatService(AssistantMessageRepository messageRepository, AssistantSessionRepository sessionRepository,
+                       AssistantAuditLogRepository auditLogRepository, ThreadPoolTaskExecutor streamTaskExecutor) {
         this.messageRepository = messageRepository;
         this.sessionRepository = sessionRepository;
         this.auditLogRepository = auditLogRepository;
+        this.streamExecutor = streamTaskExecutor;
         
         org.springframework.http.client.SimpleClientHttpRequestFactory factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(300000); // 5 minutes
@@ -156,7 +164,8 @@ public class ChatService {
 
         SseEmitter emitter = new SseEmitter(300000L); // 5 minutes timeout
 
-        new Thread(() -> {
+        // 使用有界线程池执行异步推流，避免每次请求 new Thread() 导致线程无界增长、长期运行后资源耗尽
+        streamExecutor.execute(() -> {
             long startTime = System.currentTimeMillis();
             try {
                 StringBuilder fullAnswer = new StringBuilder();
@@ -180,7 +189,7 @@ public class ChatService {
                             try {
                                 emitter.send(SseEmitter.event().data(jsonStr));
                             } catch (Exception e) {
-                                // 忽略发送过程中的异常，避免打断流的读取
+                                // 客户端可能已断开，忽略发送异常，避免打断流的读取
                             }
                         }
                         return null;
@@ -189,27 +198,44 @@ public class ChatService {
                 
                 long costMs = System.currentTimeMillis() - startTime;
                 
-                // 将完整的 AI 回复保存到数据库
-                AssistantMessage aiMsg = new AssistantMessage();
-                aiMsg.setSessionId(finalSessionId);
-                aiMsg.setRole("ai");
-                aiMsg.setContent(fullAnswer.toString());
-                aiMsg.setMessageTime(new Date());
-                aiMsg.setCostMs((int) costMs);
-                messageRepository.save(aiMsg);
+                // 将完整的 AI 回复保存到数据库（保存失败不应影响流式回复本身）
+                try {
+                    AssistantMessage aiMsg = new AssistantMessage();
+                    aiMsg.setSessionId(finalSessionId);
+                    aiMsg.setRole("ai");
+                    aiMsg.setContent(fullAnswer.toString());
+                    aiMsg.setMessageTime(new Date());
+                    aiMsg.setCostMs((int) costMs);
+                    messageRepository.save(aiMsg);
+                } catch (Exception dbEx) {
+                    log.warn("保存 AI 流式回复失败: {}", dbEx.getMessage());
+                }
                 
                 saveLog(userId, "MODEL_CALL_STREAM", "Requested model stream", "Model replied in " + costMs + "ms", "SUCCESS");
 
-                emitter.complete();
+                try {
+                    emitter.complete();
+                } catch (Exception ignored) {
+                    // 连接已断开或流已结束，忽略
+                }
             } catch (Exception e) {
+                log.error("SSE 推流异常: {}", e.getMessage(), e);
                 saveLog(userId, "MODEL_CALL_STREAM", "Requested model stream", e.getMessage(), "FAILED");
                 try {
                     String errorJson = new ObjectMapper().writeValueAsString(Collections.singletonMap("content", "\n[Error: 服务异常或超时]"));
-                    emitter.send(errorJson);
-                } catch (Exception ex) {}
-                emitter.completeWithError(e);
+                    emitter.send(SseEmitter.event().data(errorJson));
+                } catch (Exception ex) {
+                    // 客户端断开时忽略发送失败
+                }
+                try {
+                    // 用 complete() 正常结束流，而不是 completeWithError()，
+                    // 避免触发 DispatcherServlet 的 /error 错误页级联
+                    emitter.complete();
+                } catch (Exception ignored) {
+                    // 流已结束或连接已断开，忽略
+                }
             }
-        }).start();
+        });
 
         return emitter;
     }

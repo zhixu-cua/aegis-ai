@@ -2,7 +2,14 @@
   <div class="kb-docs-container">
     <div class="header">
       <h2>{{ datasource?.name || '知识库文档' }}</h2>
-      <button class="btn btn-outline" @click="goBack">返回</button>
+      <div class="header-actions">
+        
+        <label v-if="datasource?.sourceType !== 'local'" class="btn btn-primary upload-btn" :class="{ 'disabled': uploading }" title="支持格式: .txt, .md, .pdf, .docx, .doc, .xlsx, .xls, .csv, .png, .jpg, .jpeg, .html, .htm">
+          <input type="file" @change="handleUpload" accept=".txt,.md,.pdf,.docx,.doc,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.html,.htm" hidden multiple :disabled="uploading" />
+          <span>{{ uploading ? '上传中...' : '上传文件' }}</span>
+        </label>
+        <button class="btn btn-outline" @click="goBack">返回</button>
+      </div>
     </div>
     
     <div class="document-list">
@@ -73,6 +80,7 @@ const datasourceId = ref<number | null>(null)
 const datasource = ref<any>({})
 const documents = ref<any[]>([])
 const loading = ref(false)
+const uploading = ref(false)
 
 // 分页状态
 const currentPage = ref(1)
@@ -91,7 +99,7 @@ const docStatusMap: Record<string, string> = {
 const loadDatasourceInfo = async () => {
   if (!datasourceId.value) return
   try {
-    const res = await api.get(`/knowledge/datasource/${datasourceId.value}`)
+    const res: any = await api.get(`/knowledge/datasource/${datasourceId.value}`)
     if (res.code === 200) {
       datasource.value = res.data
     }
@@ -146,11 +154,71 @@ const onPageSizeChange = () => {
   loadDocuments()
 }
 
+const handleUpload = async (event: Event) => {
+  const target = event.target as HTMLInputElement;
+  if (!target.files || target.files.length === 0) return;
+  
+  if (datasource.value?.sourceType !== 'cos') {
+    alert('当前数据源不支持 COS 上传');
+    target.value = '';
+    return;
+  }
+
+  const validExtensions = ['.txt', '.md', '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.csv', '.png', '.jpg', '.jpeg', '.html', '.htm'];
+  const filesArray = Array.from(target.files);
+  const invalidFiles = filesArray.filter(file => {
+    const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+    return !validExtensions.includes(ext);
+  });
+
+  if (invalidFiles.length > 0) {
+    alert(`包含不支持的文件格式，仅支持: ${validExtensions.join(', ')}`);
+    target.value = '';
+    return;
+  }
+
+  uploading.value = true;
+  let successCount = 0;
+  let failCount = 0;
+
+  try {
+    for (const file of filesArray) {
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      try {
+        const res: any = await api.post(`/knowledge/datasource/${datasourceId.value}/upload`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' }
+        });
+        
+        if (res.code === 200) {
+          successCount++;
+        } else {
+          failCount++;
+          console.error(`上传失败 ${file.name}:`, res.message);
+        }
+      } catch (err) {
+        failCount++;
+        console.error(`上传失败 ${file.name}:`, err);
+      }
+    }
+    
+    alert(`上传完成: 成功 ${successCount} 个, 失败 ${failCount} 个`);
+    // 上传完成后，重新加载文档列表并触发全局事件刷新数据源统计
+    await loadDocuments();
+    await loadDatasourceInfo();
+    window.dispatchEvent(new CustomEvent('datasource-updated'));
+  } finally {
+    uploading.value = false;
+    target.value = '';
+  }
+}
+
 const handleDeleteDoc = async (docId: number) => {
   if (!confirm('确定要物理删除该文档及其切片数据吗？删除后不可恢复。')) return
   loading.value = true
   try {
-    const res = await api.delete(`/knowledge/datasource/${datasourceId.value}/documents/${docId}`)
+    const res: any = await api.delete(`/knowledge/datasource/${datasourceId.value}/documents/${docId}`)
     if (res.code === 200) {
       alert('删除成功，后台将自动清理数据')
       // 刷新列表和统计
@@ -218,12 +286,32 @@ onMounted(() => {
   color: #1d2129;
 }
 
+.header-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
 .btn {
   padding: 8px 20px;
   border: none;
   border-radius: 6px;
   cursor: pointer;
   font-size: 14px;
+}
+
+.btn-primary {
+  background-color: #4f6ef7;
+  color: #ffffff;
+}
+
+.btn-primary:hover:not(:disabled):not(.disabled) {
+  background-color: #3a5cd8;
+}
+
+.btn-primary.disabled {
+  background-color: #b2c1ff;
+  cursor: not-allowed;
 }
 
 .btn-outline {

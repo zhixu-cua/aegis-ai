@@ -52,7 +52,7 @@ async def upsert_chunks(
             # 调用 Ollama 生成向量（使用异步客户端避免阻塞事件循环）
             try:
                 embedding_response = await client.embeddings(
-                    model="nomic-embed-text",
+                    model="bge-m3",
                     prompt=chunk_text
                 )
                 embedding = embedding_response["embedding"]

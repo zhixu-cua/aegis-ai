@@ -18,7 +18,7 @@ echo.
 
 echo [2/6] 正在启动 Redis 服务...
 cd /d "E:\aegis-ai\Redis"
-start "Redis-Server" cmd /k "redis-server.exe redis.windows.conf"
+start "Redis-Server" cmd /k "chcp 65001 >nul && redis-server.exe redis.windows.conf"
 echo Redis 服务已在独立窗口中启动
 echo.
 
@@ -30,19 +30,19 @@ echo.
 
 echo [4/6] 正在启动 AI 服务 (ai-service)...
 cd /d "E:\aegis-ai\ai-service"
-start "AI-Service" cmd /k ".\venv\Scripts\activate && python main.py"
+start "AI-Service" cmd /k "chcp 65001 >nul && .\venv\Scripts\activate && python main.py"
 echo AI 服务已在独立窗口中启动
 echo.
 
 echo [5/6] 正在启动 Spring Boot 后端服务 (BackendApplication)...
 cd /d "E:\aegis-ai\backend"
-start "Backend-Service" cmd /k "mvn spring-boot:run"
+start "Backend-Service" cmd /k "chcp 65001 >nul && set JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF-8 && mvn spring-boot:run"
 echo 后端服务已在独立窗口中启动
 echo.
 
 echo [6/6] 正在启动 Vue 前端服务 (assistant-web)...
 cd /d "E:\aegis-ai\assistant-web"
-start "Frontend-Web" cmd /k "npm run dev"
+start "Frontend-Web" cmd /k "chcp 65001 >nul && npm run dev"
 echo 前端服务已在独立窗口中启动
 echo.
 

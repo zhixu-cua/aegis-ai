@@ -207,7 +207,7 @@ const fetchDatasources = async () => {
 
 const fetchUserInfo = async () => {
   try {
-    const res = await api.get('/user/me')
+    const res: any = await api.get('/user/me')
     if (res.code === 200 && res.data) {
       userStore.setUsername(res.data.username)
       userStore.setUserId(res.data.id)

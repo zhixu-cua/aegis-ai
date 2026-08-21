@@ -120,4 +120,15 @@ public class KnowledgeBaseController {
         kbService.deleteDocument(id, docId);
         return Result.success();
     }
+
+    /**
+     * 上传文档到数据源
+     */
+    @PostMapping("/datasource/{id}/upload")
+    public Result<Void> uploadDocument(
+            @PathVariable Long id,
+            @RequestParam("file") org.springframework.web.multipart.MultipartFile file) {
+        kbService.uploadDocument(id, file);
+        return Result.success();
+    }
 }
