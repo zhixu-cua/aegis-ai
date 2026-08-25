@@ -1,33 +1,38 @@
 package com.aegis.assistant.service.impl;
 
-import com.aegis.assistant.dto.*;
-import com.aegis.assistant.entity.KbDatasource;
-import com.aegis.assistant.repository.KbDatasourceRepository;
-import com.aegis.assistant.service.KnowledgeBaseService;
-import com.aegis.assistant.util.RedisStreamUtil;
-import com.aegis.assistant.service.SaTokenService;
+import java.io.File;
+import java.nio.file.Files;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.stream.Collectors;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
-import com.aegis.assistant.repository.UserRepository;
-import com.aegis.assistant.entity.User;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
-import java.time.LocalDateTime;
-import java.util.List;
-import java.util.stream.Collectors;
-import java.io.File;
-import java.io.IOException;
-import java.nio.file.Files;
+import com.aegis.assistant.dto.CreateDatasourceDTO;
+import com.aegis.assistant.dto.DatasourceDetailVO;
+import com.aegis.assistant.dto.DatasourceStatusVO;
+import com.aegis.assistant.dto.DatasourceVO;
+import com.aegis.assistant.dto.DocumentVO;
+import com.aegis.assistant.dto.UpdateDatasourceDTO;
+import com.aegis.assistant.entity.KbDatasource;
+import com.aegis.assistant.entity.User;
+import com.aegis.assistant.repository.KbDatasourceRepository;
+import com.aegis.assistant.repository.UserRepository;
+import com.aegis.assistant.service.KnowledgeBaseService;
+import com.aegis.assistant.service.SaTokenService;
+import com.aegis.assistant.util.RedisStreamUtil;
 import com.qcloud.cos.COSClient;
 import com.qcloud.cos.ClientConfig;
 import com.qcloud.cos.auth.BasicCOSCredentials;
-import com.qcloud.cos.region.Region;
 import com.qcloud.cos.model.PutObjectRequest;
-import org.springframework.web.multipart.MultipartFile;
+import com.qcloud.cos.region.Region;
 
 @Service
 public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
@@ -90,6 +95,19 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         datasource.setSyncFrequency(dto.getSyncFrequency());
         datasource.setSourceRank(dto.getSourceRank());
         datasourceRepository.save(datasource);
+
+        // 若数据源处于启用状态，配置变更后立即重新同步并重建监听，确保新配置（路径/频率）立即生效
+        if ("active".equals(datasource.getStatus())) {
+            String path = extractSyncPath(datasource);
+            if (path != null && !path.isEmpty()) {
+                // 先停止旧监听，再触发同步，最后按新频率决定是否重启监听
+                stopRealtimeListener(id);
+                forceRefresh(id, path);
+                if ("realtime".equals(datasource.getSyncFrequency())) {
+                    startRealtimeListener(id, path, datasource.getTenantId());
+                }
+            }
+        }
     }
 
     @Override
@@ -105,17 +123,23 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         datasource.setStatus("active");
         datasource.setLastSyncAt(LocalDateTime.now());
         datasourceRepository.save(datasource);
-        
-        // 兼容 Windows 路径中的反斜杠，防止 JSON 字符串格式化时出现异常
-        String normalizedPath = extractPath(datasource.getSourceConfig()).replace("\\", "\\\\");
-        
-        // 发送启动监听指令到 AI 服务
-        redisStreamUtil.publish("listener_command", String.format(
-            "{\"action\":\"start\",\"datasource_id\":%d,\"path\":\"%s\",\"tenant_id\":\"%s\"}",
-            id, normalizedPath, datasource.getTenantId()
-        ));
-        
-        log.info("启用同步: datasource_id={}", id);
+
+        // 提取同步路径（local 用 path，cos 用 prefix）
+        String path = extractSyncPath(datasource);
+
+        // 启用后立即触发一次全量同步，确保马上能看到效果，而不是只能等下一次定时任务
+        if (path != null && !path.isEmpty()) {
+            forceRefresh(id, path);
+        }
+
+        // 只有“实时同步”才启动文件监听（watchdog）；“每小时/每天”由定时任务 DatasourceSyncTask 负责
+        if ("realtime".equals(datasource.getSyncFrequency())) {
+            startRealtimeListener(id, path, datasource.getTenantId());
+        } else {
+            stopRealtimeListener(id);
+        }
+
+        log.info("启用同步: datasource_id={}, syncFrequency={}, path={}", id, datasource.getSyncFrequency(), path);
     }
     
     @Override
@@ -315,5 +339,40 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
             return String.valueOf(sourceConfig.get("path"));
         }
         return "";
+    }
+
+    /**
+     * 提取数据源的同步路径/前缀：
+     * - local 类型取 sourceConfig.path（文件夹路径）
+     * - cos 类型取 sourceConfig.prefix（对象前缀，为空则用 "/"）
+     */
+    private String extractSyncPath(KbDatasource datasource) {
+        java.util.Map<String, Object> config = datasource.getSourceConfig();
+        if (config == null) {
+            return "";
+        }
+        if ("cos".equals(datasource.getSourceType())) {
+            String prefix = config.containsKey("prefix") ? String.valueOf(config.get("prefix")) : "";
+            return (prefix == null || prefix.isEmpty()) ? "/" : prefix;
+        }
+        return config.containsKey("path") ? String.valueOf(config.get("path")) : "";
+    }
+
+    private void startRealtimeListener(Long id, String path, String tenantId) {
+        if (path == null || path.isEmpty()) {
+            return;
+        }
+        // 兼容 Windows 路径中的反斜杠，防止 JSON 字符串格式化时出现异常
+        String normalizedPath = path.replace("\\", "\\\\");
+        redisStreamUtil.publish("listener_command", String.format(
+            "{\"action\":\"start\",\"datasource_id\":%d,\"path\":\"%s\",\"tenant_id\":\"%s\"}",
+            id, normalizedPath, tenantId
+        ));
+    }
+
+    private void stopRealtimeListener(Long id) {
+        redisStreamUtil.publish("listener_command", String.format(
+            "{\"action\":\"stop\",\"datasource_id\":%d}", id
+        ));
     }
 }

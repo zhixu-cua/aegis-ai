@@ -12,6 +12,7 @@
     "axios": "^1.9.0",
     "highlight.js": "^11.11.1",
     "marked": "^18.0.7",
+    "markstream-vue": "^2.0.2",
     "pinia": "^3.0.2",
     "vue": "^3.5.39",
     "vue-router": "^4.5.1"

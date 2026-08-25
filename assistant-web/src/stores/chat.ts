@@ -6,6 +6,7 @@ export interface ChatMessage {
   role: 'user' | 'ai';
   content: string;
   citations?: string[];
+  isStreaming?: boolean;
 }
 
 export interface ChatSession {

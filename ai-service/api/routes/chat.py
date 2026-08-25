@@ -32,11 +32,9 @@ except ImportError:
 
 router = APIRouter()
 
-
 # ============================================================================
 # 可配置参数（全部支持环境变量覆盖，方便后续切换中文向量模型 / 重排模型）
 # ============================================================================
-#EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "bge-m3")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:7b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
@@ -50,16 +48,24 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "aegis123")
 VECTOR_TOP_K = int(os.getenv("VECTOR_TOP_K", "100"))            # 向量检索候选数
 BM25_TOP_K = int(os.getenv("BM25_TOP_K", "100"))                # 关键词检索候选数
 BM25_CORPUS_LIMIT = int(os.getenv("BM25_CORPUS_LIMIT", "10000"))# BM25 全语料上限（防止超大库 OOM）
-RERANK_CANDIDATE_K = int(os.getenv("RERANK_CANDIDATE_K", "20")) # 进入重排的候选数
-FINAL_TOP_K = int(os.getenv("FINAL_TOP_K", "5"))                # 最终喂给 LLM 的片段数
-# 重排分数（原始 logit）阈值：低于该值的候选视为无关被丢弃；全部低于阈值则退回闲聊兜底
+RERANK_CANDIDATE_K = int(os.getenv("RERANK_CANDIDATE_K", "30")) # 进入重排的候选数
+FINAL_TOP_K = int(os.getenv("FINAL_TOP_K", "10"))                # 最终喂给 LLM 的核心片段数
 RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0.0"))
+# 每个核心片段向两侧扩展的相邻块数（长文档切片后，相邻块常包含答案的完整上下文）
+NEIGHBOR_WINDOW = int(os.getenv("NEIGHBOR_WINDOW", "1"))
+# 是否尝试调用 Ollama /api/tokenize 精确计数（部分 Ollama 版本缺少该接口，默认关闭以避免 404 告警）
+TOKENIZE_API_ENABLED = os.getenv("TOKENIZE_API", "0") == "1"
 
+# ---------- 新增：动态上下文窗口相关参数 ----------
+MAX_CTX = int(os.getenv("MAX_CTX", "32768"))        # 硬上限（防止显存溢出）
+MIN_CTX = int(os.getenv("MIN_CTX", "4096"))         # 最小上下文（兜底）
+CTX_BUFFER = int(os.getenv("CTX_BUFFER", "2048"))   # 额外预留 Buffer（给系统提示词和输出留空间）
+# 若无法精确计算 Token，使用字符数估算（中英文混合场景 1 字符 ≈ 1.6 Token）
+ESTIMATE_RATIO = float(os.getenv("ESTIMATE_RATIO", "1.6"))
 
 # ============================================================================
 # 重排序模型加载
 # ============================================================================
-# 前面。这里改用真正的交叉编码器(cross-encoder)，并增加 CUDA -> CPU 的回退。
 _RERANKER_MODELS = [
     m.strip()
     for m in os.getenv(
@@ -68,7 +74,6 @@ _RERANKER_MODELS = [
     ).split(",")
     if m.strip()
 ]
-
 
 def _load_reranker():
     if CrossEncoder is None:
@@ -92,15 +97,12 @@ def _load_reranker():
     print("Warning: 所有重排模型加载失败，将退化为 RRF 融合结果。")
     return None
 
-
 reranker = _load_reranker()
-
 
 class QueryRequest(BaseModel):
     question: str
     datasourceId: Optional[int] = None
     tenantId: Optional[str] = None
-
 
 # ============================================================================
 # BM25 / RRF / 分词
@@ -141,7 +143,6 @@ class SimpleBM25:
                     scores[i] += idf * num / den
         return scores
 
-
 def _tokenize(text: str) -> List[str]:
     """中文优先使用 jieba 分词；缺失时退回字符 + 二元词组，避免退化成单字匹配。"""
     if jieba is not None:
@@ -153,7 +154,6 @@ def _tokenize(text: str) -> List[str]:
         tokens.extend(run[i:i + 2] for i in range(len(run) - 1))
     return tokens
 
-
 def compute_rrf(rank_list1, rank_list2, k=60):
     rrf_scores = {}
     for rank, doc_id in enumerate(rank_list1):
@@ -163,7 +163,6 @@ def compute_rrf(rank_list1, rank_list2, k=60):
         rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
 
     return rrf_scores
-
 
 # ============================================================================
 # 检索辅助函数
@@ -190,7 +189,6 @@ def _build_filter(request: QueryRequest, base: int):
 
     return "", []
 
-
 def _find_overlap(prev_text: str, next_text: str, max_overlap: int = 300) -> int:
     """返回 prev_text 尾部与 next_text 头部重叠的字符数，无重叠返回 0。"""
     n = min(len(prev_text), len(next_text), max_overlap)
@@ -198,7 +196,6 @@ def _find_overlap(prev_text: str, next_text: str, max_overlap: int = 300) -> int
         if prev_text.endswith(next_text[:i]):
             return i
     return 0
-
 
 def _build_context(rows: List[Dict[str, Any]]) -> List[str]:
     """
@@ -246,6 +243,77 @@ def _build_context(rows: List[Dict[str, Any]]) -> List[str]:
 
     return [row["chunk_text"] for row in merged]
 
+# ============================================================================
+# 计算 Token 数的辅助函数
+# ============================================================================
+def _est_tokens(text: str) -> int:
+    """快速估算 token 数（不做 HTTP 调用，用于上下文截断与 num_ctx 计算）：
+    中日韩文字按 1 字符 ≈ 1 token 估算，其余字符按 4 字符 ≈ 1 token 估算。"""
+    if not text:
+        return 0
+    cjk = sum(1 for ch in text if '\u4e00' <= ch <= '\u9fff')
+    other = len(text) - cjk
+    return cjk + (other + 3) // 4
+
+
+_tokenize_warned = False
+
+def count_tokens(text: str, model: str = None) -> int:
+    """
+    计算 Token 数。
+
+    默认使用本地估算（不调用 Ollama），避免部分 Ollama 版本缺少
+    /api/tokenize 接口时每次都抛出 “HTTP Error 404” 告警。
+    若设置环境变量 TOKENIZE_API=1，则优先调用 Ollama /api/tokenize 精确计算，
+    失败时静默回退到本地估算（仅首次打印告警，避免刷屏）。
+    """
+    global _tokenize_warned
+    if not text:
+        return 0
+
+    if TOKENIZE_API_ENABLED:
+        tokenize_url = f"{OLLAMA_BASE_URL}/api/tokenize"
+        payload = {
+            "model": model or LLM_MODEL,
+            "prompt": text,  # /api/tokenize 的请求字段名是 prompt，不是 content
+        }
+        proxy_handler = urllib.request.ProxyHandler({})
+        opener = urllib.request.build_opener(proxy_handler)
+        try:
+            req = urllib.request.Request(
+                tokenize_url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            with opener.open(req, timeout=10.0) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                tokens = result.get("tokens")
+                if isinstance(tokens, list):
+                    return len(tokens)
+                if "count" in result:
+                    return int(result["count"])
+        except Exception as e:
+            if not _tokenize_warned:
+                print(f"Warning: Tokenize API 不可用，改用本地估算: {e}")
+                _tokenize_warned = True
+
+    # 本地估算（更贴近 qwen 中文分词，且不会产生告警）
+    return _est_tokens(text)
+
+
+def _truncate_context(chunks: List[str], max_tokens: int) -> List[str]:
+    """按 Token 预算截断上下文，避免超长上下文被 Ollama 静默截断导致内容丢失。"""
+    if max_tokens <= 0:
+        return chunks
+    kept: List[str] = []
+    used = 0
+    for c in chunks:
+        t = _est_tokens(c)
+        if kept and used + t > max_tokens:
+            break
+        kept.append(c)
+        used += t
+    return kept
 
 # ============================================================================
 # 主接口
@@ -371,20 +439,53 @@ def rag_query(request: QueryRequest):
                             reverse=True,
                         )
                         top_score = float(scored[0][1]) if scored else RERANK_MIN_SCORE
-                        if top_score >= RERANK_MIN_SCORE:
-                            selected_rows = [
-                                row for row, s in scored if float(s) >= RERANK_MIN_SCORE
-                            ][:FINAL_TOP_K]
-                        else:
+                        if top_score < RERANK_MIN_SCORE:
                             # 全部候选都低于相关性阈值：视为无有效知识，退回闲聊兜底
                             return []
+                        # 有相关候选：按重排分数取前 FINAL_TOP_K。
+                        # 不再用阈值对每个片段硬过滤，避免误删长文档中相关性稍低但属于答案续篇的片段，
+                        # 从而造成回答只覆盖到一半内容的问题。
+                        selected_rows = [row for row, _ in scored[:FINAL_TOP_K]]
                     except Exception as e:
                         print(f"Warning: 重排序失败，退化为 RRF TopK: {e}")
                         selected_rows = candidate_rows[:FINAL_TOP_K]
                 else:
                     selected_rows = candidate_rows[:FINAL_TOP_K]
 
-                # --- 2.5 组装上下文（去重 + 同文档相邻去重叠） ---
+                # --- 2.5 邻居块扩展：长文档切片后，命中片段的相邻块往往包含完整上下文 ---
+                if NEIGHBOR_WINDOW > 0 and selected_rows:
+                    conditions = []
+                    neighbor_params = []
+                    for r in selected_rows:
+                        doc_id = r["document_id"]
+                        idx = r["chunk_index"] or 0
+                        lo = max(0, idx - NEIGHBOR_WINDOW)
+                        hi = idx + NEIGHBOR_WINDOW
+                        conditions.append(
+                            f"(chunk.document_id = ${len(neighbor_params) + 1} "
+                            f"AND chunk.chunk_index BETWEEN ${len(neighbor_params) + 2} AND ${len(neighbor_params) + 3})"
+                        )
+                        neighbor_params.extend([doc_id, lo, hi])
+
+                    neighbor_query = f"""
+                        SELECT chunk.id, chunk.document_id, chunk.chunk_index, chunk.chunk_text
+                        FROM kb_chunk chunk
+                        WHERE {" OR ".join(conditions)}
+                        ORDER BY chunk.document_id, chunk.chunk_index
+                    """
+                    neighbor_rows = await conn.fetch(neighbor_query, *neighbor_params)
+
+                    # 去重：相邻核心片段的区间可能重叠，导致同一块被返回多次
+                    seen_ids = set()
+                    expanded = []
+                    for nr in neighbor_rows:
+                        if nr["id"] not in seen_ids:
+                            seen_ids.add(nr["id"])
+                            expanded.append(nr)
+                    if expanded:
+                        selected_rows = expanded
+
+                # --- 2.6 组装上下文（去重 + 同文档相邻去重叠） ---
                 return _build_context(selected_rows)
 
             finally:
@@ -406,7 +507,14 @@ def rag_query(request: QueryRequest):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Hybrid search failed: {str(e)}")
 
+    # ========================================================================
     # 3. 构造 RAG Prompt
+    # ========================================================================
+    # 先计算输出长度与上下文 Token 预算，并在构造 prompt 前截断上下文，
+    # 避免超长上下文被 Ollama 静默截断（那会导致回答只覆盖到部分内容）
+    num_predict = int(os.getenv("NUM_PREDICT", "4096"))
+    max_context_tokens = max(0, MAX_CTX - CTX_BUFFER - num_predict)
+    chunks_text = _truncate_context(chunks_text, max_context_tokens)
     context = "\n\n".join(chunks_text)
 
     if context.strip():
@@ -414,9 +522,10 @@ def rag_query(request: QueryRequest):
             "你是一名专业的售后客服助手。请严格依据下方【参考资料】回答用户问题。\n\n"
             "【回答要求】\n"
             "1. 只使用与用户问题直接相关的资料内容；若某些资料与问题无关，请直接忽略，绝不生硬拼凑或缝合。\n"
-            "2. 回答要完整、有条理、足够详细：先给出明确结论，再分点说明操作步骤、原因或注意事项，必要时给出示例；不要只回一句空话。\n"
-            "3. 若资料不足以完全回答，可结合你的通用知识补充，但必须说明哪些来自资料、哪些是你的补充；若确实无法回答，请如实说明，并给出可操作的排查建议。\n"
-            "4. 使用简体中文，可适度使用 Markdown（标题/列表/表格）提升可读性，但段落之间不要堆砌多余空行。\n\n"
+            "2. 回答必须完整、全面：把参考资料中所有与问题相关的要点、步骤、原因和注意事项都覆盖到，不要遗漏，也不要只挑部分内容作答。\n"
+            "3. 先给出明确结论，再分点详细说明，必要时给出示例；不要只回一句空话，也不要中途省略或截断。\n"
+            "4. 若资料不足以完全回答，可结合你的通用知识补充，但必须说明哪些来自资料、哪些是你的补充；若确实无法回答，请如实说明，并给出可操作的排查建议。\n"
+            "5. 使用简体中文，可适度使用 Markdown（标题/列表/表格）提升可读性，但段落之间不要堆砌多余空行。\n\n"
             "【参考资料】\n"
             f"{context}\n\n"
             "【用户问题】\n"
@@ -431,7 +540,21 @@ def rag_query(request: QueryRequest):
             f"{request.question}"
         )
 
-    # 4. 调用 LLM 流式生成
+    # ========================================================================
+    # 4. 动态计算 num_ctx
+    # ========================================================================
+    # 计算 prompt 的 Token 数（精确计算，失败则估算）
+    prompt_tokens = count_tokens(prompt, model=LLM_MODEL)
+
+    # 动态设置 num_ctx = prompt_tokens + 预留输出长度（取 num_predict 和 CTX_BUFFER 的较大值）
+    # 但必须限制在 [MIN_CTX, MAX_CTX] 之间
+    dynamic_ctx = prompt_tokens + max(num_predict, CTX_BUFFER)
+    final_ctx = max(MIN_CTX, min(MAX_CTX, dynamic_ctx))
+
+    print(f"动态上下文: prompt_tokens={prompt_tokens}, num_predict={num_predict}, "
+          f"动态值={dynamic_ctx}, 最终={final_ctx} (MIN={MIN_CTX}, MAX={MAX_CTX})")
+
+    # 5. 调用 LLM 流式生成（使用动态计算出的 final_ctx）
     ollama_url = f"{OLLAMA_BASE_URL}/api/generate"
     payload = {
         "model": LLM_MODEL,
@@ -439,8 +562,8 @@ def rag_query(request: QueryRequest):
         "stream": True,
         "keep_alive": "10m",
         "options": {
-            "num_predict": int(os.getenv("NUM_PREDICT", "4096")),
-            "num_ctx": int(os.getenv("NUM_CTX", "8192")),
+            "num_predict": num_predict,
+            "num_ctx": final_ctx,                       # 动态设置
             "temperature": float(os.getenv("TEMPERATURE", "0.3")),
             "top_p": float(os.getenv("TOP_P", "0.8")),
             "repeat_penalty": float(os.getenv("REPEAT_PENALTY", "1.1")),

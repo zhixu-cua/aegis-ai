@@ -13,7 +13,13 @@
       >
         <div class="avatar" v-if="msg.role === 'ai'">🤖</div>
         <div class="message-bubble">
-          <div v-if="msg.role === 'ai'" class="message-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+          <div v-if="msg.role === 'ai'" class="message-content markdown-body">
+            <MarkdownRender 
+              mode="chat" 
+              :content="msg.content" 
+              :final="!msg.isStreaming" 
+            />
+          </div>
           <div v-else class="message-content">{{ msg.content }}</div>
           <!-- 知识库引用来源 UI -->
           <div v-if="msg.citations && msg.citations.length > 0" class="citations-container">
@@ -62,10 +68,6 @@
           ></textarea>
           
           <div class="input-actions">
-            <!-- <label class="action-btn upload-btn" title="支持格式: .txt, .md, .pdf, .docx, .doc, .xlsx, .xls, .csv, .png, .jpg, .jpeg, .html, .htm">
-              <input type="file" @change="handleFileSelect" accept=".txt,.md,.pdf,.docx,.doc,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.html,.htm" hidden multiple />
-              📎 附件
-            </label> -->
             <button class="action-btn send-btn" style="margin-left: auto;" @click="sendMessage" :disabled="loading || (!inputMsg.trim() && selectedFiles.length === 0)">
               发送
             </button>
@@ -80,23 +82,8 @@
 import { ref, computed, nextTick } from 'vue';
 import { useChatStore, type ChatMessage } from '@/stores/chat';
 import request from '../api/request';
-import { marked } from 'marked';
-import hljs from 'highlight.js';
-import 'highlight.js/styles/github.css'; // 使用 GitHub 浅色主题
-
-// 配置 marked 使用 highlight.js
-(marked as any).setOptions({
-  highlight: function (code: string, lang: string) {
-    const language = hljs.getLanguage(lang) ? lang : 'plaintext';
-    return hljs.highlight(code, { language }).value;
-  },
-  breaks: true, // 允许回车换行
-});
-
-const renderMarkdown = (text: string) => {
-  if (!text) return '';
-  return marked.parse(text);
-};
+import MarkdownRender from 'markstream-vue';
+import 'markstream-vue/index.css';
 
 const chatStore = useChatStore();
 const inputMsg = ref('');
@@ -192,14 +179,16 @@ const sendMessage = async () => {
   }
   await scrollToBottom();
 
-  const aiMsg: ChatMessage = { 
+  // 创建 AI 消息，并标记为流式进行中
+  const aiMsg: ChatMessage & { isStreaming?: boolean } = { 
     role: 'ai', 
     content: '',
-    citations: fileNames ? fileNames.split(', ') : undefined
+    citations: fileNames ? fileNames.split(', ') : undefined,
+    isStreaming: true,
   };
   currentSession.value.messages.push(aiMsg);
   
-  const reactiveAiMsg = currentSession.value.messages[currentSession.value.messages.length - 1];
+  const reactiveAiMsg = currentSession.value.messages[currentSession.value.messages.length - 1] as ChatMessage & { isStreaming?: boolean };
   
   try {
     const token = localStorage.getItem('satoken');
@@ -259,6 +248,9 @@ const sendMessage = async () => {
     const message = error instanceof Error ? error.message : '服务暂时不可用，请稍后重试。';
     reactiveAiMsg.content += `\n[Error: ${message}]`;
   } finally {
+    if (reactiveAiMsg) {
+      reactiveAiMsg.isStreaming = false;
+    }
     if (currentSession.value) {
       currentSession.value.updatedAt = Date.now();
     }
@@ -411,23 +403,102 @@ const sendMessage = async () => {
   border: 1px solid #eef0f4;
 }
 
-/* Markdown Styles */
+/* ============================================
+   覆盖 markstream-vue 的默认样式，优化标题层级
+   ============================================ */
 :deep(.markdown-body) {
   font-family: inherit;
+  font-size: 15px;
+  line-height: 1.7;
+  color: #1d2129;
 }
+
+/* 段落 */
 :deep(.markdown-body p) {
   margin-top: 0;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 :deep(.markdown-body p:last-child) {
   margin-bottom: 0;
 }
+
+/* ----- 标题层级优化（关键） ----- */
+:deep(.markdown-body h1) {
+  font-size: 28px;
+  font-weight: 700;
+  border-bottom: 3px solid #4f6ef7;
+  padding-bottom: 8px;
+  margin: 28px 0 16px 0;
+  color: #0a1a3a;
+  line-height: 1.3;
+}
+
+:deep(.markdown-body h2) {
+  font-size: 22px;
+  font-weight: 600;
+  border-bottom: 2px solid #e8ecf1;
+  padding-bottom: 6px;
+  margin: 24px 0 12px 0;
+  color: #1d2a4a;
+  line-height: 1.3;
+}
+
+:deep(.markdown-body h3) {
+  font-size: 19px;
+  font-weight: 600;
+  margin: 20px 0 10px 0;
+  color: #2c3e6a;
+  line-height: 1.3;
+}
+
+:deep(.markdown-body h4) {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 16px 0 8px 0;
+  color: #3a4e7a;
+  line-height: 1.3;
+}
+
+:deep(.markdown-body h5),
+:deep(.markdown-body h6) {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 14px 0 6px 0;
+  color: #4a5e8a;
+  line-height: 1.3;
+}
+
+/* 列表 */
+:deep(.markdown-body ul),
+:deep(.markdown-body ol) {
+  padding-left: 24px;
+  margin: 8px 0 12px 0;
+}
+:deep(.markdown-body li) {
+  margin-bottom: 4px;
+}
+
+/* 引用块 */
+:deep(.markdown-body blockquote) {
+  border-left: 4px solid #4f6ef7;
+  background-color: #f8f9fe;
+  padding: 10px 16px;
+  margin: 12px 0;
+  color: #4e5969;
+  border-radius: 0 4px 4px 0;
+}
+:deep(.markdown-body blockquote p:last-child) {
+  margin-bottom: 0;
+}
+
+/* 代码块 */
 :deep(.markdown-body pre) {
-  background-color: #f2f3f5;
+  background-color: #f6f8fa;
   border-radius: 8px;
-  padding: 12px;
+  padding: 16px;
   overflow-x: auto;
   margin: 12px 0;
+  border: 1px solid #eef0f4;
 }
 :deep(.markdown-body code) {
   font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace;
@@ -435,12 +506,57 @@ const sendMessage = async () => {
 }
 :deep(.markdown-body p code) {
   background-color: rgba(0,0,0,0.05);
-  padding: 2px 4px;
+  padding: 2px 6px;
   border-radius: 4px;
-  color: #eb5757;
+  color: #d63384;
 }
 
-/* Input Area */
+/* 表格 */
+:deep(.markdown-body table) {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 12px 0;
+}
+:deep(.markdown-body th),
+:deep(.markdown-body td) {
+  border: 1px solid #e0e4ea;
+  padding: 8px 12px;
+  text-align: left;
+}
+:deep(.markdown-body th) {
+  background-color: #f5f7fa;
+  font-weight: 600;
+}
+:deep(.markdown-body tr:nth-child(even)) {
+  background-color: #fafbfc;
+}
+
+/* 分割线 */
+:deep(.markdown-body hr) {
+  border: none;
+  border-top: 2px dashed #e0e4ea;
+  margin: 24px 0;
+}
+
+/* 图片 */
+:deep(.markdown-body img) {
+  max-width: 100%;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+
+/* 链接 */
+:deep(.markdown-body a) {
+  color: #4f6ef7;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.2s;
+}
+:deep(.markdown-body a:hover) {
+  border-bottom-color: #4f6ef7;
+}
+
+/* 输入区域 */
 .chat-input-area {
   padding: 0 10% 32px 10%;
   background-color: transparent;

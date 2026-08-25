@@ -16,83 +16,85 @@
     </div>
     
     <nav class="nav">
-      <!-- Chat Section -->
-      <div class="nav-section">
-        <div class="nav-item-wrapper">
-          <router-link to="/chat" class="nav-item" @click.prevent="handleNewChat" title="新对话">
-            <span class="icon">💬</span>
-            <span class="text" v-if="!isCollapsed">新对话</span>
+      <div class="nav-fixed">
+        <!-- Chat Section -->
+        <div class="nav-section">
+          <div class="nav-item-wrapper">
+            <router-link to="/chat" class="nav-item" @click.prevent="handleNewChat" title="新对话">
+              <span class="icon">💬</span>
+              <span class="text" v-if="!isCollapsed">新对话</span>
+            </router-link>
+          </div>
+        </div>
+
+        <!-- KB Section -->
+        <div class="nav-section mt-10">
+          <router-link to="/kb" class="nav-item" title="数据源设置">
+            <span class="icon">⚙️</span>
+            <span class="text" v-if="!isCollapsed">数据源设置</span>
           </router-link>
         </div>
-      </div>
 
-      <!-- KB Section -->
-      <div class="nav-section mt-10">
-        <router-link to="/kb" class="nav-item" title="数据源设置">
-          <span class="icon">⚙️</span>
-          <span class="text" v-if="!isCollapsed">数据源设置</span>
-        </router-link>
-      </div>
+        <div class="divider"></div>
 
-      <div class="divider"></div>
-
-      <div class="nav-section kb-section" v-if="!isCollapsed">
-        <div class="kb-header" @click="kbExpanded = !kbExpanded">
-          <div class="kb-header-left">
-            <span class="icon">🗂️</span>
-            <span class="text">我的知识库</span>
+        <div class="nav-section kb-section" v-if="!isCollapsed">
+          <div class="kb-header" @click="kbExpanded = !kbExpanded">
+            <div class="kb-header-left">
+              <span class="icon">🗂️</span>
+              <span class="text">我的知识库</span>
+            </div>
+            <span class="arrow" :class="{ collapsed: !kbExpanded }">▼</span>
           </div>
-          <span class="arrow" :class="{ collapsed: !kbExpanded }">▼</span>
-        </div>
-        <div class="kb-list" v-show="kbExpanded">
-          <div v-if="loading" class="kb-item empty">加载中...</div>
-          <div v-else-if="myDatasources.length === 0" class="kb-item empty">暂无知识库</div>
-          <div 
-            v-else
-            v-for="(ds, index) in myDatasources" 
-            :key="ds.id" 
-            class="kb-item"
-            :title="ds.name"
-            @click="goToKbDetail(ds.id)"
-            style="cursor: pointer;"
-          >
-            <span class="tree-line">{{ index === myDatasources.length - 1 ? '└─' : '├─' }}</span>
-            <span class="kb-name">{{ ds.name }}</span>
+          <div class="kb-list" v-show="kbExpanded">
+            <div v-if="loading" class="kb-item empty">加载中...</div>
+            <div v-else-if="myDatasources.length === 0" class="kb-item empty">暂无知识库</div>
+            <div 
+              v-else
+              v-for="(ds, index) in myDatasources" 
+              :key="ds.id" 
+              class="kb-item"
+              :title="ds.name"
+              @click="goToKbDetail(ds.id)"
+              style="cursor: pointer;"
+            >
+              <span class="tree-line">{{ index === myDatasources.length - 1 ? '└─' : '├─' }}</span>
+              <span class="kb-name">{{ ds.name }}</span>
+            </div>
           </div>
         </div>
-      </div>
 
-      <!-- 共享知识库 (仅管理员可见) -->
-      <div class="nav-section kb-section mt-10" v-if="!isCollapsed && userStore.role === 'admin'">
-        <div class="kb-header" @click="sharedKbExpanded = !sharedKbExpanded">
-          <div class="kb-header-left">
-            <span class="icon">🌐</span>
-            <span class="text">共享知识库</span>
+        <!-- 共享知识库 (仅管理员可见) -->
+        <div class="nav-section kb-section mt-10" v-if="!isCollapsed && userStore.role === 'admin'">
+          <div class="kb-header" @click="sharedKbExpanded = !sharedKbExpanded">
+            <div class="kb-header-left">
+              <span class="icon">🌐</span>
+              <span class="text">共享知识库</span>
+            </div>
+            <span class="arrow" :class="{ collapsed: !sharedKbExpanded }">▼</span>
           </div>
-          <span class="arrow" :class="{ collapsed: !sharedKbExpanded }">▼</span>
-        </div>
-        <div class="kb-list" v-show="sharedKbExpanded">
-          <div v-if="loading" class="kb-item empty">加载中...</div>
-          <div v-else-if="sharedDatasources.length === 0" class="kb-item empty">暂无共享知识库</div>
-          <div 
-            v-else
-            v-for="(ds, index) in sharedDatasources" 
-            :key="ds.id" 
-            class="kb-item"
-            :title="ds.name"
-            @click="goToKbDetail(ds.id)"
-            style="cursor: pointer;"
-          >
-            <span class="tree-line">{{ index === sharedDatasources.length - 1 ? '└─' : '├─' }}</span>
-            <span class="kb-name">{{ ds.name }}</span>
+          <div class="kb-list" v-show="sharedKbExpanded">
+            <div v-if="loading" class="kb-item empty">加载中...</div>
+            <div v-else-if="sharedDatasources.length === 0" class="kb-item empty">暂无共享知识库</div>
+            <div 
+              v-else
+              v-for="(ds, index) in sharedDatasources" 
+              :key="ds.id" 
+              class="kb-item"
+              :title="ds.name"
+              @click="goToKbDetail(ds.id)"
+              style="cursor: pointer;"
+            >
+              <span class="tree-line">{{ index === sharedDatasources.length - 1 ? '└─' : '├─' }}</span>
+              <span class="kb-name">{{ ds.name }}</span>
+            </div>
           </div>
         </div>
-      </div>
 
-      <div class="divider" v-if="!isCollapsed && route.path === '/chat'"></div>
+        <div class="divider" v-if="!isCollapsed && route.path === '/chat'"></div>
+      </div>
 
       <!-- Chat History (Only visible when on /chat and not collapsed) -->
-      <div class="nav-section history-section" v-if="!isCollapsed && route.path === '/chat'">
+      <div class="nav-section history-section scrollable" v-if="!isCollapsed && route.path === '/chat'">
         <div class="history-list">
           <div v-for="group in groupedSessions" :key="group.label" class="history-group">
             <div class="history-group-title">{{ group.label }}</div>
@@ -314,15 +316,33 @@ onMounted(() => {
 
 .nav {
   flex: 1;
-  padding: 8px 16px;
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
 
-.is-collapsed .nav {
+.nav-fixed {
+  flex-shrink: 0;
+  padding: 8px 16px 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 50%;
+  overflow-y: auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.is-collapsed .nav-fixed {
   padding: 8px;
   align-items: center;
+}
+
+.history-section.scrollable {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 16px 8px;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .nav-section {

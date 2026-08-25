@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
 
     # Start Redis listener task
     redis_queue_task = asyncio.create_task(listen_redis_queue())
-    command_listener_task = asyncio.create_task(listen_commands())
+    command_listener_task = asyncio.create_task(listen_commands(pg_pool))
     
     yield
     
@@ -61,6 +61,11 @@ async def lifespan(app: FastAPI):
         await pg_pool.close()
     if redis_client:
         await redis_client.close()
+
+import sys
+
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 app = FastAPI(title="售后助手 AI 服务", lifespan=lifespan)
 

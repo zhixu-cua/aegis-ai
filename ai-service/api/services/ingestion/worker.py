@@ -30,7 +30,8 @@ class DocumentWorker:
         self.backend_url = backend_url
         self.stream_key = "doc_events"
         self.group_name = "doc_workers"
-        self.consumer_name = f"worker_{id(self)}"
+        # 使用固定的消费者名，避免每次重启都产生新的消费者，导致消费组中堆积大量已死消费者
+        self.consumer_name = "worker_1"
         self.running = False
         # 限制最大并发处理文件数为 3，防止大文件夹同步时 OOM (内存溢出)
         self.semaphore = asyncio.Semaphore(3)
@@ -45,6 +46,9 @@ class DocumentWorker:
         except redis.ResponseError as e:
             if "BUSYGROUP" not in str(e):
                 raise
+        
+        # 启动时回收历史遗留的 pending 消息（被已退出消费者占用），避免重启导致消息卡死、文件无法重新同步
+        await self._recover_pending()
         
         self.running = True
         while self.running:
@@ -73,7 +77,48 @@ class DocumentWorker:
     async def stop(self):
         """停止 Worker"""
         self.running = False
-    
+
+    async def _recover_pending(self):
+        """
+        服务重启后，回收历史遗留的 pending 消息并重新处理：
+        1) 用 XAUTOCLAIM 把 idle 超过 60 秒的 pending 消息从旧消费者认领到当前消费者；
+        2) 读取并处理当前消费者名下所有 pending 消息。
+        处理逻辑本身幂等（按 file_hash 去重），重复处理不会产生脏数据。
+        """
+        try:
+            await self.redis.xautoclaim(
+                self.stream_key, self.group_name, self.consumer_name,
+                min_idle_time=60000, start_id="0", count=100
+            )
+        except Exception as e:
+            print(f"XAUTOCLAIM failed: {e}")
+            return
+
+        try:
+            while True:
+                result = await self.redis.xreadgroup(
+                    groupname=self.group_name,
+                    consumername=self.consumer_name,
+                    streams={self.stream_key: "0"},
+                    count=10,
+                    block=100
+                )
+                if not result:
+                    break
+                got_any = False
+                for stream, messages in result:
+                    for msg_id, data in messages:
+                        got_any = True
+                        try:
+                            await self._process_event(data)
+                        except Exception as e:
+                            print(f"Recover pending event error: {e}")
+                        await self.redis.xack(self.stream_key, self.group_name, msg_id)
+                if not got_any:
+                    break
+        except Exception as e:
+            print(f"Recover pending read failed: {e}")
+
     async def _process_event(self, event: Dict[bytes, bytes]):
         """处理单个文档事件"""
         # 兼容 Java 发送的 JSON 字符串包裹在 'data' 字段中的情况
@@ -126,6 +171,9 @@ class DocumentWorker:
                 # 暂时不支持直接删除整个文件夹的逻辑，或者可以遍历查询数据库删除
                 return
                 
+            # 支持的文件格式列表
+            SUPPORTED_EXTS = {'.txt', '.md', '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.csv', '.png', '.jpg', '.jpeg', '.html', '.htm'}
+            
             print(f"检测到文件夹同步请求，开始遍历目录: {file_path}")
             for root, dirs, files in os.walk(file_path):
                 # 忽略隐藏目录
@@ -134,6 +182,12 @@ class DocumentWorker:
                     # 忽略隐藏文件或临时文件
                     if f.startswith('.') or f.startswith('~'):
                         continue
+                        
+                    # 校验文件格式
+                    ext = os.path.splitext(f)[1].lower()
+                    if ext not in SUPPORTED_EXTS:
+                        continue
+                        
                     full_path = os.path.join(root, f)
                     # 递归调用自身处理单文件，避免阻塞当前主逻辑太久
                     # 注意：这里我们使用 asyncio.create_task 后台执行，避免单次循环过长
@@ -144,6 +198,12 @@ class DocumentWorker:
         if event_type != "deleted" and not os.path.exists(file_path):
             await self._notify_progress(datasource_id, file_path, "failed", 
                                          error="文件不存在")
+            return
+            
+        # 校验单文件格式是否支持
+        SUPPORTED_EXTS = {'.txt', '.md', '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.csv', '.png', '.jpg', '.jpeg', '.html', '.htm'}
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext not in SUPPORTED_EXTS:
             return
         
         if event_type == "deleted":
@@ -188,9 +248,15 @@ class DocumentWorker:
                     await self._notify_progress(datasource_id, sync_prefix, "failed", error="COS 中未找到该文件")
                     return
 
+            SUPPORTED_EXTS = {'.txt', '.md', '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.csv', '.png', '.jpg', '.jpeg', '.html', '.htm'}
             for file_info in files:
                 key = file_info['key']
                 etag = file_info['etag']
+                
+                # 校验 COS 文件格式
+                ext = os.path.splitext(key)[1].lower()
+                if ext not in SUPPORTED_EXTS:
+                    continue
                 
                 # 直接将 COS 的 key 作为逻辑路径
                 logical_key = key

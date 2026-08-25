@@ -46,11 +46,12 @@ class DocumentHandler(FileSystemEventHandler):
         """发布事件到 Redis Stream"""
         # 兼容 Windows 路径：将反斜杠替换为正斜杠，防止被 JSON 或者 Redis 客户端截断
         normalized_path = path.replace('\\', '/')
+        import time
         event_data = {
             "datasource_id": str(self.datasource_id),
             "event_type": event_type,
             "file_path": normalized_path,
-            "timestamp": asyncio.get_event_loop().time() if asyncio.get_event_loop().is_running() else 0
+            "timestamp": time.time()
         }
         try:
             # self.redis 已经是同步客户端，且 redis-py 的连接池是线程安全的，可以直接使用
