@@ -267,8 +267,34 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
     @Override
     public void uploadDocument(Long datasourceId, MultipartFile file) {
         KbDatasource datasource = findAndValidate(datasourceId);
-        if (!"cos".equals(datasource.getSourceType())) {
-            throw new RuntimeException("仅支持上传到 COS 类型的数据源");
+        if (!"cos".equals(datasource.getSourceType()) && !"local".equals(datasource.getSourceType())) {
+            throw new RuntimeException("仅支持上传到 COS 或 本地 类型的数据源");
+        }
+
+        if ("local".equals(datasource.getSourceType())) {
+            String path = (String) datasource.getSourceConfig().get("path");
+            if (path == null || path.isEmpty()) {
+                throw new RuntimeException("本地数据源路径未配置");
+            }
+            java.io.File dir = new java.io.File(path);
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+            String originalFilename = file.getOriginalFilename();
+            if (originalFilename == null) {
+                originalFilename = "unknown_" + System.currentTimeMillis();
+            }
+            java.io.File destFile = new java.io.File(dir, originalFilename);
+            try {
+                file.transferTo(destFile);
+                log.info("文件上传到本地成功: path={}", destFile.getAbsolutePath());
+                // For local files, the filePath param is just the absolute path
+                forceRefresh(datasourceId, destFile.getAbsolutePath());
+            } catch (Exception e) {
+                log.error("上传文件到本地失败", e);
+                throw new RuntimeException("上传文件失败: " + e.getMessage());
+            }
+            return; // skip COS logic
         }
 
         java.util.Map<String, Object> config = datasource.getSourceConfig();
