@@ -281,13 +281,13 @@ const handleRefresh = async () => {
   if (form.value.sourceType === 'local') {
     path = form.value.path
   } else if (form.value.sourceType === 'cos') {
-    path = form.value.prefix || '/'
+    path = form.value.prefix || ''
   } else {
-    path = '/' // 默认或者其他类型的兜底
+    path = '' // 默认或者其他类型的兜底
   }
   
-  if (!path) {
-    alert('请先配置并保存路径/前缀信息')
+  if (form.value.sourceType === 'local' && !path) {
+    alert('请先配置并保存路径信息')
     return
   }
   

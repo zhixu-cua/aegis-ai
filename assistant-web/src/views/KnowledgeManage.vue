@@ -57,6 +57,7 @@
               {{ statusMap[ds.status] || ds.status }}
             </div>
             <button class="btn-setting" @click.stop="openConfig(ds.id)">设置</button>
+            <button v-if="ds.status === 'inactive'" class="btn-delete" @click.stop="deleteDatasource(ds)">删除</button>
           </div>
         </div>
         <div class="ds-card-body">
@@ -152,6 +153,17 @@ const refresh = async () => {
     }
   } catch (e) {
     console.error('获取知识库失败:', e)
+  }
+}
+
+const deleteDatasource = async (ds: any) => {
+  if (confirm(`确定要删除数据源 "${ds.name}" 吗？\n注意：该操作仅删除数据源配置，不会删除已上传或同步的文档。`)) {
+    try {
+      await api.delete(`/knowledge/datasource/${ds.id}`)
+      refresh()
+    } catch (e: any) {
+      alert('删除失败: ' + (e.response?.data?.message || e.message))
+    }
   }
 }
 
@@ -400,6 +412,22 @@ onUnmounted(() => {
 .btn-setting:hover {
   background: #eef1fe;
   color: #4f6ef7;
+}
+
+.btn-delete {
+  padding: 4px 12px;
+  background: #f2f3f5;
+  color: #f53f3f;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-delete:hover {
+  background: #ffece8;
+  color: #f53f3f;
 }
 
 .ds-card-body {
