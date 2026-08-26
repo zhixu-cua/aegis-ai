@@ -132,6 +132,9 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
     @Transactional
     public void deleteDatasource(Long id) {
         KbDatasource datasource = findAndValidate(id);
+        if (!"inactive".equals(datasource.getStatus())) {
+            throw new RuntimeException("只能删除未启用的数据源");
+        }
         datasourceRepository.delete(datasource);
     }
     
@@ -397,7 +400,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         }
         if ("cos".equals(datasource.getSourceType())) {
             String prefix = config.containsKey("prefix") ? String.valueOf(config.get("prefix")) : "";
-            return (prefix == null || prefix.isEmpty()) ? "/" : prefix;
+            return (prefix == null || prefix.isEmpty()) ? "" : prefix;
         }
         return config.containsKey("path") ? String.valueOf(config.get("path")) : "";
     }
