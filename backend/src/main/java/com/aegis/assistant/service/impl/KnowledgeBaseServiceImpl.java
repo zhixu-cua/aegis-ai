@@ -75,6 +75,24 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         datasource.setTenantId(tenantId);
         datasource.setIsShared(dto.getIsShared() != null ? dto.getIsShared() : false);
         
+        if ("local".equals(dto.getSourceType())) {
+            String basePath = System.getProperty("user.dir") + java.io.File.separator + "data" + java.io.File.separator + "knowledge";
+            // 此时id还没生成，用时间戳作为唯一标识
+            String managedPath = basePath + java.io.File.separator + tenantId + java.io.File.separator + "ds_" + System.currentTimeMillis();
+            
+            java.io.File dir = new java.io.File(managedPath);
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+            
+            java.util.Map<String, Object> config = datasource.getSourceConfig();
+            if (config == null) {
+                config = new java.util.HashMap<>();
+            }
+            config.put("path", managedPath);
+            datasource.setSourceConfig(config);
+        }
+        
         KbDatasource saved = datasourceRepository.save(datasource);
         return saved.getId();
     }
