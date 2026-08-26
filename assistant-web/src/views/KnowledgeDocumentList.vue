@@ -4,7 +4,7 @@
       <h2>{{ datasource?.name || '知识库文档' }}</h2>
       <div class="header-actions">
         
-        <label v-if="datasource?.sourceType !== 'local'" class="btn btn-primary upload-btn" :class="{ 'disabled': uploading }" title="支持格式: .txt, .md, .pdf, .docx, .doc, .xlsx, .xls, .csv, .png, .jpg, .jpeg, .html, .htm">
+        <label class="btn btn-primary upload-btn" :class="{ 'disabled': uploading }" title="支持格式: .txt, .md, .pdf, .docx, .doc, .xlsx, .xls, .csv, .png, .jpg, .jpeg, .html, .htm">
           <input type="file" @change="handleUpload" accept=".txt,.md,.pdf,.docx,.doc,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.html,.htm" hidden multiple :disabled="uploading" />
           <span>{{ uploading ? '上传中...' : '上传文件' }}</span>
         </label>
@@ -158,8 +158,8 @@ const handleUpload = async (event: Event) => {
   const target = event.target as HTMLInputElement;
   if (!target.files || target.files.length === 0) return;
   
-  if (datasource.value?.sourceType !== 'cos') {
-    alert('当前数据源不支持 COS 上传');
+  if (datasource.value?.sourceType !== 'cos' && datasource.value?.sourceType !== 'local') {
+    alert('当前数据源不支持上传');
     target.value = '';
     return;
   }
