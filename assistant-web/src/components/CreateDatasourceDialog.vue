@@ -17,12 +17,7 @@
             <option value="cos">腾讯云 COS</option>
           </select>
         </div>
-        <template v-if="form.sourceType === 'local'">
-          <div class="form-group">
-            <label>文件夹路径 *</label>
-            <input v-model="form.path" placeholder="/data/knowledge/product" />
-          </div>
-        </template>
+
         <template v-if="form.sourceType === 'cos'">
           <div class="form-group">
             <label>COS桶名 *</label>
@@ -129,11 +124,6 @@ const submit = async () => {
     return
   }
   
-  if (form.value.sourceType === 'local' && !form.value.path) {
-    alert('请填写本地文件夹路径')
-    return
-  }
-
   if (form.value.sourceType === 'cos') {
     if (!form.value.bucket || !form.value.region || !form.value.secretId || !form.value.secretKey) {
       alert('请填写完整的 COS 配置信息（桶名、地域、SecretId、SecretKey）')
@@ -145,7 +135,7 @@ const submit = async () => {
   try {
     const config: any = {}
     if (form.value.sourceType === 'local') {
-      config.path = form.value.path
+      // no path to send
     } else if (form.value.sourceType === 'cos') {
       config.bucket = form.value.bucket
       config.region = form.value.region
