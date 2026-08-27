@@ -63,8 +63,14 @@ class DocumentWorker:
                 
                 for stream, messages in results:
                     for msg_id, data in messages:
-                        await self._process_event(data)
+                        ok = await self._process_with_retry(data)
                         await self.redis.xack(self.stream_key, self.group_name, msg_id)
+                        if not ok:
+                            # 重试耗尽：写入死信流，便于人工排查与重放
+                            try:
+                                await self.redis.xadd("doc_events_dead", data, maxlen=10000)
+                            except Exception as e:
+                                print(f"发布死信失败: {e}")
                         
             except asyncio.CancelledError:
                 break
@@ -118,6 +124,49 @@ class DocumentWorker:
                     break
         except Exception as e:
             print(f"Recover pending read failed: {e}")
+
+    async def _process_with_retry(self, event: Dict[bytes, bytes], max_attempt: int = 3) -> bool:
+        """处理单条事件，失败自动重试（指数退避）；最终失败记录死信到 ingest_task。"""
+        ds_id, fpath = self._parse_event_meta(event)
+        last_error = ""
+        for attempt in range(1, max_attempt + 1):
+            try:
+                await self._process_event(event)
+                return True
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                last_error = str(e)
+                print(f"处理事件失败 (attempt {attempt}/{max_attempt}) ds={ds_id} path={fpath}: {last_error}")
+                if attempt < max_attempt:
+                    await asyncio.sleep(2 ** attempt)
+        # 死信记录
+        try:
+            async with self.pg_pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO ingest_task (datasource_id, file_path, status, attempt, max_attempt, error_msg)
+                    VALUES ($1, $2, 'dead', $3, $4, $5)
+                """, ds_id, fpath or '', max_attempt, max_attempt, last_error[:500])
+        except Exception as e:
+            print(f"记录死信失败: {e}")
+        return False
+
+    def _parse_event_meta(self, event: Dict[bytes, bytes]):
+        """从事件中提取 datasource_id 与 file_path（用于死信记录，尽力而为）。"""
+        ds_id = None
+        fpath = ''
+        try:
+            if b'data' in event:
+                import json
+                d = json.loads(event[b'data'].decode())
+                ds_id = int(d.get('datasource_id', 0)) or None
+                fpath = d.get('file_path', '')
+            else:
+                ds_id = int(event.get(b'datasource_id', b'0')) or None
+                fpath = event.get(b'file_path', b'').decode()
+        except Exception:
+            pass
+        return ds_id, fpath
 
     async def _process_event(self, event: Dict[bytes, bytes]):
         """处理单个文档事件"""
@@ -349,7 +398,7 @@ class DocumentWorker:
                         datasource_id=datasource_id,
                         file_path=logical_key,
                         file_hash=etag,  # 直接使用 COS ETag 作为哈希
-                        chunks=chunks
+                        blocks=chunks
                     )
                     
                     # 6. 更新文档状态
@@ -380,6 +429,7 @@ class DocumentWorker:
                         UPDATE kb_document SET status = 'failed', error_message = $1, updated_at = NOW()
                         WHERE datasource_id = $2 AND file_path = $3
                     """, error_msg[:500], datasource_id, logical_key)
+                raise
 
     async def _handle_upsert(self, datasource_id: int, logical_path: str, physical_path: str):
         """处理新增/修改：解析 -> 切片 -> 向量化 -> 入库"""
@@ -446,7 +496,7 @@ class DocumentWorker:
                     datasource_id=datasource_id,
                     file_path=logical_path,
                     file_hash=file_hash,
-                    chunks=chunks
+                    blocks=chunks
                 )
                 
                 # 6. 更新文档状态
@@ -471,6 +521,7 @@ class DocumentWorker:
                         UPDATE kb_document SET status = 'failed', error_message = $1, updated_at = NOW()
                         WHERE datasource_id = $2 AND file_hash = $3
                     """, error_msg[:500], datasource_id, file_hash)
+                raise
     
     async def _handle_delete(self, datasource_id: int, file_path: str):
         """删除：删除向量块和文档记录 (物理删除)"""
