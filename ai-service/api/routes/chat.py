@@ -13,16 +13,12 @@ from fastapi.responses import StreamingResponse
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 
-# ---------- 中文分词 ----------
-try:
-    import jieba
-    # 预热词典，避免首次调用时出现明显的阻塞
-    try:
-        jieba.initialize()
-    except Exception:
-        pass
-except ImportError:
-    jieba = None
+from api.db import get_pool
+from api.tokenizer import tokenize
+from api.logging_utils import get_logger, set_request_id
+import uuid
+
+log = get_logger("rag")
 
 # ---------- 重排序模型（可选依赖） ----------
 try:
@@ -36,7 +32,7 @@ router = APIRouter()
 # 可配置参数（全部支持环境变量覆盖，方便后续切换中文向量模型 / 重排模型）
 # ============================================================================
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "bge-m3")
-LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:7b")
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen3.8:27b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
 DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -143,17 +139,6 @@ class SimpleBM25:
                     scores[i] += idf * num / den
         return scores
 
-def _tokenize(text: str) -> List[str]:
-    """中文优先使用 jieba 分词；缺失时退回字符 + 二元词组，避免退化成单字匹配。"""
-    if jieba is not None:
-        return [t for t in jieba.cut(text) if t.strip()]
-    tokens: List[str] = []
-    tokens.extend(re.findall(r"[a-zA-Z0-9_]+", text))
-    for run in re.findall(r"[\u4e00-\u9fff]{2,}", text):
-        tokens.extend(run)
-        tokens.extend(run[i:i + 2] for i in range(len(run) - 1))
-    return tokens
-
 def compute_rrf(rank_list1, rank_list2, k=60):
     rrf_scores = {}
     for rank, doc_id in enumerate(rank_list1):
@@ -173,7 +158,7 @@ def _build_filter(request: QueryRequest, base: int):
     base 为占位符起始编号：向量查询中 $1 是 embedding，所以 base=2；BM25 查询中 base=1。
     """
     if request.datasourceId is not None:
-        return f"doc.datasource_id = ${base}", [request.datasourceId]
+        return f"chunk.document_id IN (SELECT id FROM kb_document WHERE datasource_id = ${base})", [request.datasourceId]
 
     if request.tenantId is not None:
         try:
@@ -181,9 +166,9 @@ def _build_filter(request: QueryRequest, base: int):
         except (TypeError, ValueError):
             user_id_int = -1
         clause = (
-            f"doc.upload_user_id = ${base} OR doc.datasource_id IN ("
+            f"chunk.document_id IN (SELECT id FROM kb_document WHERE upload_user_id = ${base} OR datasource_id IN ("
             f"SELECT id FROM kb_datasource WHERE tenant_id = ${base + 1} OR is_shared = true"
-            f")"
+            f"))"
         )
         return clause, [user_id_int, str(request.tenantId)]
 
@@ -242,6 +227,102 @@ def _build_context(rows: List[Dict[str, Any]]) -> List[str]:
         merged.append(row)
 
     return [row["chunk_text"] for row in merged]
+
+
+async def _bm25_search(conn, query_tokens, request: QueryRequest) -> List[int]:
+    """
+    基于倒排索引 kb_chunk_terms 的 BM25 检索（只检索子块）。
+    倒排索引为空（尚未重建索引）时，回退为全语料扫描。
+    """
+    if not query_tokens:
+        return []
+
+    terms_count = await conn.fetchval("SELECT COUNT(*) FROM kb_chunk_terms")
+    if terms_count:
+        # 统计 N 与 avgdl（过滤后语料，仅含向量的子块）
+        n_filter, n_params = _build_filter(request, base=1)
+        n_cond = f"AND {n_filter}" if n_filter else ""
+        n_avgdl = await conn.fetchrow(f"""
+            SELECT COUNT(*)::float AS n, COALESCE(AVG(LENGTH(chunk.chunk_text)), 0)::float AS avgdl
+            FROM kb_chunk chunk
+            WHERE chunk.embedding IS NOT NULL {n_cond}
+        """, *n_params)
+        N = float(n_avgdl["n"]) or 0.0
+        avgdl = float(n_avgdl["avgdl"]) or 0.0
+        if N <= 0 or avgdl <= 0:
+            return []
+
+        bm25_filter, bm25_params = _build_filter(request, base=2)
+        bm25_cond = f"AND {bm25_filter}" if bm25_filter else ""
+        bm25_query = f"""
+            SELECT t.chunk_id AS id,
+                   SUM(
+                     (LN(1 + (({N} - df.cnt + 0.5) / (df.cnt + 0.5)))) *
+                     ((t.tf * (1.5 + 1)) / (t.tf + 1.5 * (1 - 0.75 + 0.75 * LENGTH(chunk.chunk_text) / {avgdl})))
+                   ) AS score
+            FROM kb_chunk_terms t
+            JOIN (SELECT term, COUNT(*)::float AS cnt FROM kb_chunk_terms GROUP BY term) df ON df.term = t.term
+            JOIN kb_chunk chunk ON chunk.id = t.chunk_id
+            WHERE t.term = ANY($1::text[])
+              AND chunk.embedding IS NOT NULL
+              {bm25_cond}
+            GROUP BY t.chunk_id
+            ORDER BY score DESC
+            LIMIT {BM25_TOP_K}
+        """
+        rows = await conn.fetch(bm25_query, query_tokens, *bm25_params)
+        return [row["id"] for row in rows]
+
+    # 回退：倒排索引为空，退化为全语料扫描（与旧实现一致）
+    fb_filter, fb_params = _build_filter(request, base=1)
+    fb_cond = f"AND {fb_filter}" if fb_filter else ""
+    fb_query = f"""
+        SELECT chunk.id, chunk.chunk_text
+        FROM kb_chunk chunk
+        WHERE chunk.embedding IS NOT NULL {fb_cond}
+        LIMIT {BM25_CORPUS_LIMIT}
+    """
+    fb_rows = await conn.fetch(fb_query, *fb_params)
+    if not fb_rows:
+        return []
+    corpus = [tokenize(row["chunk_text"]) for row in fb_rows]
+    bm25 = SimpleBM25(corpus)
+    bm25_scores = bm25.get_scores(query_tokens)
+    bm25_ranked = sorted(
+        zip([row["id"] for row in fb_rows], bm25_scores),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    return [cid for cid, s in bm25_ranked if s > 0][:BM25_TOP_K]
+
+
+async def _expand_parents(conn, selected_rows) -> List[Dict[str, Any]]:
+    """
+    small-to-big：用命中子块的父块（完整章节）作为回答上下文；
+    若子块无父块（旧数据），则保留子块本身。父块不参与检索，仅作上下文。
+    """
+    parent_ids = {row["parent_id"] for row in selected_rows if row.get("parent_id")}
+    if not parent_ids:
+        return selected_rows
+
+    parents = await conn.fetch("""
+        SELECT chunk.id, chunk.document_id, chunk.chunk_index, chunk.chunk_text,
+               chunk.section_title, chunk.heading_path, chunk.parent_id
+        FROM kb_chunk chunk
+        WHERE chunk.id = ANY($1::bigint[])
+    """, list(parent_ids))
+    parent_map = {row["id"]: row for row in parents}
+
+    result: List[Dict[str, Any]] = []
+    seen = set()
+    for row in selected_rows:
+        pid = row.get("parent_id")
+        p = parent_map.get(pid) if pid else None
+        target = p if p is not None else row
+        if target["id"] not in seen:
+            seen.add(target["id"])
+            result.append(target)
+    return result
 
 # ============================================================================
 # 计算 Token 数的辅助函数
@@ -318,30 +399,29 @@ def _truncate_context(chunks: List[str], max_tokens: int) -> List[str]:
 # ============================================================================
 # 主接口
 # ============================================================================
-@router.post("/internal/rag/query")
-def rag_query(request: QueryRequest):
-    # 显式绕过系统代理，避免本地服务请求被代理软件干扰。
-    proxy_handler = urllib.request.ProxyHandler({})
-    opener = urllib.request.build_opener(proxy_handler)
-
-    # 1. 生成问题向量
-    ollama_embed_url = f"{OLLAMA_BASE_URL}/api/embeddings"
-    embed_payload = {
-        "model": EMBEDDING_MODEL,
-        "prompt": request.question,
-    }
+def _embed_question(question: str):
+    """同步生成问题向量（在 asyncio.to_thread 中运行，避免阻塞事件循环）。"""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     embed_req = urllib.request.Request(
-        ollama_embed_url,
-        data=json.dumps(embed_payload).encode("utf-8"),
+        f"{OLLAMA_BASE_URL}/api/embeddings",
+        data=json.dumps({"model": EMBEDDING_MODEL, "prompt": question}).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
+    with opener.open(embed_req, timeout=300.0) as response:
+        result = json.loads(response.read().decode("utf-8"))
+        embedding = result.get("embedding")
+        if not embedding:
+            raise Exception("Failed to generate embedding for question")
+        return embedding
 
+
+@router.post("/internal/rag/query")
+async def rag_query(request: QueryRequest):
+    set_request_id(uuid.uuid4().hex[:12])
+
+    # 1. 生成问题向量（在独立线程中执行阻塞的 HTTP 调用）
     try:
-        with opener.open(embed_req, timeout=300.0) as response:
-            result = json.loads(response.read().decode("utf-8"))
-            question_embedding = result.get("embedding")
-            if not question_embedding:
-                raise Exception("Failed to generate embedding for question")
+        question_embedding = await asyncio.to_thread(_embed_question, request.question)
     except urllib.error.HTTPError as he:
         if he.code == 404:
             raise HTTPException(
@@ -356,22 +436,25 @@ def rag_query(request: QueryRequest):
     chunks_text = []
     try:
         async def _query_db():
-            conn = await asyncpg.connect(
-                host=DB_HOST,
-                port=DB_PORT,
-                database=DB_NAME,
-                user=DB_USER,
-                password=DB_PASSWORD,
-            )
+            pool = get_pool()
+            if pool is not None:
+                conn = await pool.acquire()
+                should_close = False
+            else:
+                conn = await asyncpg.connect(
+                    host=DB_HOST, port=DB_PORT, database=DB_NAME, user=DB_USER, password=DB_PASSWORD
+                )
+                should_close = True
             try:
-                # --- 2.1 向量检索 ---
+                # --- 2.1 向量检索（只检索有向量的子块，排除父块） ---
                 vector_filter, vector_params = _build_filter(request, base=2)
-                vector_condition = f"WHERE {vector_filter}" if vector_filter else ""
+                vector_condition = f"AND {vector_filter}" if vector_filter else ""
                 vector_query = f"""
                     SELECT chunk.id, chunk.document_id, chunk.chunk_index, chunk.chunk_text,
+                           chunk.section_title, chunk.heading_path, chunk.parent_id,
                            1 - (chunk.embedding <=> $1::vector) AS vector_score
                     FROM kb_chunk chunk
-                    JOIN kb_document doc ON chunk.document_id = doc.id
+                    WHERE chunk.embedding IS NOT NULL
                     {vector_condition}
                     ORDER BY vector_score DESC
                     LIMIT {VECTOR_TOP_K}
@@ -381,60 +464,37 @@ def rag_query(request: QueryRequest):
                     return []
                 vector_ranked_ids = [row["id"] for row in vector_rows]
 
-                # --- 2.2 关键词 BM25：在全语料上计算，而非只在向量 TopK 内计算 ---
-                bm25_filter, bm25_params = _build_filter(request, base=1)
-                bm25_condition = f"WHERE {bm25_filter}" if bm25_filter else ""
-                bm25_query = f"""
-                    SELECT chunk.id, chunk.document_id, chunk.chunk_index, chunk.chunk_text
-                    FROM kb_chunk chunk
-                    JOIN kb_document doc ON chunk.document_id = doc.id
-                    {bm25_condition}
-                    LIMIT {BM25_CORPUS_LIMIT}
-                """
-                bm25_rows = await conn.fetch(bm25_query, *bm25_params)
-
-                bm25_ranked_ids: List[int] = []
-                if bm25_rows:
-                    corpus = [_tokenize(row["chunk_text"]) for row in bm25_rows]
-                    query_tokens = _tokenize(request.question)
-                    bm25 = SimpleBM25(corpus)
-                    bm25_scores = bm25.get_scores(query_tokens)
-                    bm25_ranked = sorted(
-                        zip([row["id"] for row in bm25_rows], bm25_scores),
-                        key=lambda x: x[1],
-                        reverse=True,
-                    )
-                    # 只保留真正命中关键词的候选（score > 0），并截断到 TopK
-                    bm25_ranked_ids = [cid for cid, s in bm25_ranked if s > 0][:BM25_TOP_K]
+                # --- 2.2 关键词 BM25（倒排索引） ---
+                query_tokens = tokenize(request.question)
+                bm25_ranked_ids = await _bm25_search(conn, query_tokens, request)
 
                 # --- 2.3 RRF 融合 ---
                 rrf_scores = compute_rrf(vector_ranked_ids, bm25_ranked_ids, k=60)
                 fused_ranked = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+                if not fused_ranked:
+                    return []
 
-                # 建立 id -> row 映射（向量与 BM25 结果合并）
-                all_rows_map: Dict[int, Dict[str, Any]] = {}
-                for row in vector_rows:
-                    all_rows_map[row["id"]] = row
-                for row in (bm25_rows or []):
-                    all_rows_map.setdefault(row["id"], row)
-
-                candidate_rows = []
-                for doc_id, _ in fused_ranked[:RERANK_CANDIDATE_K]:
-                    row = all_rows_map.get(doc_id)
-                    if row is not None:
-                        candidate_rows.append(row)
-
-                if not candidate_rows:
+                # 取前 RERANK_CANDIDATE_K 个候选，一次性获取完整行
+                candidate_ids = [cid for cid, _ in fused_ranked[:RERANK_CANDIDATE_K]]
+                candidate_rows = await conn.fetch("""
+                    SELECT chunk.id, chunk.document_id, chunk.chunk_index, chunk.chunk_text,
+                           chunk.section_title, chunk.heading_path, chunk.parent_id
+                    FROM kb_chunk chunk
+                    WHERE chunk.id = ANY($1::bigint[])
+                """, candidate_ids)
+                row_map = {row["id"]: row for row in candidate_rows}
+                candidate_rows_ordered = [row_map[cid] for cid in candidate_ids if cid in row_map]
+                if not candidate_rows_ordered:
                     return []
 
                 # --- 2.4 交叉编码器重排 + 相关性过滤 ---
-                selected_rows = candidate_rows
-                if reranker is not None and len(candidate_rows) > 1:
-                    pairs = [[request.question, row["chunk_text"]] for row in candidate_rows]
+                selected_rows = candidate_rows_ordered
+                if reranker is not None and len(candidate_rows_ordered) > 1:
+                    pairs = [[request.question, row["chunk_text"]] for row in candidate_rows_ordered]
                     try:
                         scores = reranker.predict(pairs)
                         scored = sorted(
-                            zip(candidate_rows, scores),
+                            zip(candidate_rows_ordered, scores),
                             key=lambda x: float(x[1]),
                             reverse=True,
                         )
@@ -442,66 +502,31 @@ def rag_query(request: QueryRequest):
                         if top_score < RERANK_MIN_SCORE:
                             # 全部候选都低于相关性阈值：视为无有效知识，退回闲聊兜底
                             return []
-                        # 有相关候选：按重排分数取前 FINAL_TOP_K。
-                        # 不再用阈值对每个片段硬过滤，避免误删长文档中相关性稍低但属于答案续篇的片段，
-                        # 从而造成回答只覆盖到一半内容的问题。
                         selected_rows = [row for row, _ in scored[:FINAL_TOP_K]]
                     except Exception as e:
                         print(f"Warning: 重排序失败，退化为 RRF TopK: {e}")
-                        selected_rows = candidate_rows[:FINAL_TOP_K]
+                        selected_rows = candidate_rows_ordered[:FINAL_TOP_K]
                 else:
-                    selected_rows = candidate_rows[:FINAL_TOP_K]
+                    selected_rows = candidate_rows_ordered[:FINAL_TOP_K]
 
-                # --- 2.5 邻居块扩展：长文档切片后，命中片段的相邻块往往包含完整上下文 ---
-                if NEIGHBOR_WINDOW > 0 and selected_rows:
-                    conditions = []
-                    neighbor_params = []
-                    for r in selected_rows:
-                        doc_id = r["document_id"]
-                        idx = r["chunk_index"] or 0
-                        lo = max(0, idx - NEIGHBOR_WINDOW)
-                        hi = idx + NEIGHBOR_WINDOW
-                        conditions.append(
-                            f"(chunk.document_id = ${len(neighbor_params) + 1} "
-                            f"AND chunk.chunk_index BETWEEN ${len(neighbor_params) + 2} AND ${len(neighbor_params) + 3})"
-                        )
-                        neighbor_params.extend([doc_id, lo, hi])
-
-                    neighbor_query = f"""
-                        SELECT chunk.id, chunk.document_id, chunk.chunk_index, chunk.chunk_text
-                        FROM kb_chunk chunk
-                        WHERE {" OR ".join(conditions)}
-                        ORDER BY chunk.document_id, chunk.chunk_index
-                    """
-                    neighbor_rows = await conn.fetch(neighbor_query, *neighbor_params)
-
-                    # 去重：相邻核心片段的区间可能重叠，导致同一块被返回多次
-                    seen_ids = set()
-                    expanded = []
-                    for nr in neighbor_rows:
-                        if nr["id"] not in seen_ids:
-                            seen_ids.add(nr["id"])
-                            expanded.append(nr)
-                    if expanded:
-                        selected_rows = expanded
+                # --- 2.5 父子块上下文扩展（small-to-big） ---
+                selected_rows = await _expand_parents(conn, selected_rows)
 
                 # --- 2.6 组装上下文（去重 + 同文档相邻去重叠） ---
                 return _build_context(selected_rows)
 
             finally:
                 try:
-                    await conn.close()
+                    if should_close:
+                        await conn.close()
+                    else:
+                        await pool.release(conn)
                 except ConnectionAbortedError:
                     pass
                 except Exception:
                     pass
 
-        # 解决 Windows 下代理软件导致 asyncio IOCP 抛出 WinError 10038 的问题
-        import sys
-        if sys.platform == "win32":
-            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-        chunks_text = asyncio.run(_query_db())
+        chunks_text = await _query_db()
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -543,16 +568,16 @@ def rag_query(request: QueryRequest):
     # ========================================================================
     # 4. 动态计算 num_ctx
     # ========================================================================
-    # 计算 prompt 的 Token 数（精确计算，失败则估算）
-    prompt_tokens = count_tokens(prompt, model=LLM_MODEL)
+    # 计算 prompt 的 Token 数（精确计算，失败则估算；在独立线程执行避免阻塞）
+    prompt_tokens = await asyncio.to_thread(count_tokens, prompt, LLM_MODEL)
 
     # 动态设置 num_ctx = prompt_tokens + 预留输出长度（取 num_predict 和 CTX_BUFFER 的较大值）
     # 但必须限制在 [MIN_CTX, MAX_CTX] 之间
     dynamic_ctx = prompt_tokens + max(num_predict, CTX_BUFFER)
     final_ctx = max(MIN_CTX, min(MAX_CTX, dynamic_ctx))
 
-    print(f"动态上下文: prompt_tokens={prompt_tokens}, num_predict={num_predict}, "
-          f"动态值={dynamic_ctx}, 最终={final_ctx} (MIN={MIN_CTX}, MAX={MAX_CTX})")
+    log.info(f"动态上下文: prompt_tokens={prompt_tokens}, num_predict={num_predict}, "
+             f"动态值={dynamic_ctx}, 最终={final_ctx} (MIN={MIN_CTX}, MAX={MAX_CTX})")
 
     # 5. 调用 LLM 流式生成（使用动态计算出的 final_ctx）
     ollama_url = f"{OLLAMA_BASE_URL}/api/generate"
@@ -571,6 +596,8 @@ def rag_query(request: QueryRequest):
     }
 
     def generate_stream():
+        # 显式绕过系统代理，避免本地服务请求被代理软件干扰
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         emitted_any = False
         last_error = "未知错误"
         for attempt in range(3):
