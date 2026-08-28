@@ -121,6 +121,15 @@ public class KnowledgeBaseController {
         return Result.success();
     }
 
+    @DeleteMapping("/datasource/{id}/documents")
+    public Result<Void> batchDeleteDocuments(@PathVariable Long id, @RequestBody List<Long> docIds) {
+        if (docIds == null || docIds.isEmpty()) {
+            return Result.error(400, "删除列表不能为空");
+        }
+        kbService.batchDeleteDocuments(id, docIds);
+        return Result.success();
+    }
+
     /**
      * 上传文档到数据源
      */

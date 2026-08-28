@@ -14,6 +14,8 @@ public interface KnowledgeBaseService {
     DatasourceDetailVO getDatasourceDetail(Long id);
     List<DatasourceVO> listDatasources();
     org.springframework.data.domain.Page<DocumentVO> listDocuments(Long id, String status, Integer page, Integer size);
-    void deleteDocument(Long datasourceId, Long documentId);
+    void deleteDocument(Long datasourceId, Long docId);
+    
+    void batchDeleteDocuments(Long datasourceId, List<Long> docIds);
     void uploadDocument(Long datasourceId, org.springframework.web.multipart.MultipartFile file);
 }

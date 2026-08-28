@@ -268,6 +268,28 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
     }
 
     @Override
+    @Transactional
+    public void batchDeleteDocuments(Long datasourceId, List<Long> docIds) {
+        KbDatasource datasource = findAndValidate(datasourceId);
+        
+        List<com.aegis.assistant.entity.KbDocument> docs = documentRepository.findAllById(docIds);
+        for (com.aegis.assistant.entity.KbDocument doc : docs) {
+            if (!doc.getDatasourceId().equals(datasourceId)) {
+                throw new RuntimeException("部分文档不属于该数据源：" + doc.getFileName());
+            }
+        }
+        
+        if (!docs.isEmpty()) {
+            for (Long docId : docIds) {
+                documentRepository.deleteChunksByDocumentId(docId);
+            }
+            documentRepository.deleteAll(docs);
+            documentRepository.updateDatasourceCount(datasourceId);
+            log.info("触发文档批量物理删除: count={}", docs.size());
+        }
+    }
+
+    @Override
     public void uploadDocument(Long datasourceId, MultipartFile file) {
         KbDatasource datasource = findAndValidate(datasourceId);
         if (!"cos".equals(datasource.getSourceType()) && !"local".equals(datasource.getSourceType())) {
