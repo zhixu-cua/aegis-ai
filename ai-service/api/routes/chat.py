@@ -7,6 +7,7 @@ import urllib.request
 import asyncpg
 import asyncio
 import math
+import httpx
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -60,40 +61,105 @@ CTX_BUFFER = int(os.getenv("CTX_BUFFER", "2048"))   # 额外预留 Buffer（给�
 ESTIMATE_RATIO = float(os.getenv("ESTIMATE_RATIO", "1.6"))
 
 # ============================================================================
-# 重排序模型加载
+# 重排序配置
 # ============================================================================
-_RERANKER_MODELS = [
-    m.strip()
-    for m in os.getenv(
-        "RERANKER_MODELS",
-        "BAAI/bge-reranker-large,BAAI/bge-reranker-base",
-    ).split(",")
-    if m.strip()
-]
+# 重排序模式：
+#   remote                —— 调用远程「重排微服务」（推荐，重排跑在远程 GPU 服务器上，本地零资源）
+#   sentence_transformers —— 在本机加载 sentence-transformers 模型（仅当本机有 GPU 时用）
+#   off                   —— 关闭重排序，直接使用 RRF 融合结果
+RERANK_MODE = os.getenv("RERANK_MODE", "remote")
+# 远程重排微服务地址（在远程 GPU 服务器上部署 rerank-service，见 rerank-service/README.md）
+RERANK_API_URL = os.getenv("RERANK_API_URL", "http://127.0.0.1:8001")
+# 重排模型名（透传给远程服务，用于日志/展示；实际由远程服务自身配置）
+RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+# 重排相关性阈值：最高分低于该值视为无有效知识（bge-reranker 输出 logits，>0 即相关）
+RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0.0"))
 
-def _load_reranker():
-    if CrossEncoder is None:
-        print("Info: sentence-transformers 未安装，跳过重排序（使用 RRF 融合结果）。")
-        return None
-    for model_name in _RERANKER_MODELS:
+# 本地 sentence-transformers（仅 RERANK_MODE=sentence_transformers 时使用，需本机 GPU）
+try:
+    from sentence_transformers import CrossEncoder
+except ImportError:
+    CrossEncoder = None
+
+_local_reranker = None
+
+def _get_local_reranker():
+    """懒加载本地 cross-encoder（仅 sentence_transformers 模式调用，默认不占用本地资源）。"""
+    global _local_reranker
+    if _local_reranker is not None or CrossEncoder is None:
+        return _local_reranker
+    models = [m.strip() for m in os.getenv("RERANKER_MODELS", "BAAI/bge-reranker-large").split(",") if m.strip()]
+    for model_name in models:
         for device in ("cuda", "cpu"):
             try:
                 kwargs = {"device": device, "max_length": 512}
-                if "reranker-v2" in model_name or "m3" in model_name:
-                    kwargs["trust_remote_code"] = True
                 try:
-                    reranker = CrossEncoder(model_name, **kwargs)
+                    _local_reranker = CrossEncoder(model_name, **kwargs)
                 except TypeError:
                     kwargs.pop("trust_remote_code", None)
-                    reranker = CrossEncoder(model_name, **kwargs)
-                print(f"Reranker loaded: {model_name} on {device}")
-                return reranker
+                    _local_reranker = CrossEncoder(model_name, **kwargs)
+                log.info(f"本地重排模型加载成功: {model_name} on {device}")
+                return _local_reranker
             except Exception as e:
-                print(f"Warning: Failed to load reranker {model_name} on {device}: {e}")
-    print("Warning: 所有重排模型加载失败，将退化为 RRF 融合结果。")
+                print(f"Warning: 加载本地重排模型失败 {model_name} on {device}: {e}")
     return None
 
-reranker = _load_reranker()
+
+async def _rerank_candidates(question: str, candidate_rows: List[Dict[str, Any]]):
+    """
+    对候选片段重排序。
+    返回 (按相关性降序的 rows, 最高分)；失败或关闭时保持 RRF 顺序。
+    """
+    if len(candidate_rows) <= 1:
+        return candidate_rows, RERANK_MIN_SCORE
+
+    if RERANK_MODE == "remote":
+        return await _rerank_via_remote(question, candidate_rows)
+    if RERANK_MODE == "sentence_transformers":
+        local = _get_local_reranker()
+        if local is not None:
+            return _rerank_via_sentence_transformers(local, question, candidate_rows)
+    # off / 失败：保持 RRF 顺序
+    return candidate_rows, RERANK_MIN_SCORE
+
+
+async def _rerank_via_remote(question: str, candidate_rows: List[Dict[str, Any]]):
+    """
+    调用远程「重排微服务」（部署在 GPU 服务器，见 rerank-service/）。
+    请求体: {"query": ..., "documents": [...]}
+    响应体: {"model": ..., "results": [{"index": 0, "relevance_score": 0.9}, ...]}
+    失败时退化为 RRF 顺序。
+    """
+    try:
+        docs = [row["chunk_text"] for row in candidate_rows]
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{RERANK_API_URL}/rerank",
+                json={"model": RERANK_MODEL, "query": question, "documents": docs},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        results = data.get("results") or []
+        idx_to_id = {i: row["id"] for i, row in enumerate(candidate_rows)}
+        score_map = {}
+        for r in results:
+            idx = r.get("index")
+            if idx is not None and idx in idx_to_id:
+                score_map[idx_to_id[idx]] = float(r.get("relevance_score", 0.0))
+        top = max(score_map.values()) if score_map else RERANK_MIN_SCORE
+        ordered = sorted(candidate_rows, key=lambda row: score_map.get(row["id"], 0.0), reverse=True)
+        return ordered, top
+    except Exception as e:
+        log.warning(f"远程重排失败，退化为 RRF 顺序: {e}")
+        return candidate_rows, RERANK_MIN_SCORE
+
+
+def _rerank_via_sentence_transformers(local_reranker, question: str, candidate_rows: List[Dict[str, Any]]):
+    pairs = [[question, row["chunk_text"]] for row in candidate_rows]
+    scores = local_reranker.predict(pairs)
+    scored = sorted(zip(candidate_rows, scores), key=lambda x: float(x[1]), reverse=True)
+    top = float(scored[0][1]) if scored else RERANK_MIN_SCORE
+    return [row for row, _ in scored], top
 
 class QueryRequest(BaseModel):
     question: str
@@ -487,27 +553,12 @@ async def rag_query(request: QueryRequest):
                 if not candidate_rows_ordered:
                     return []
 
-                # --- 2.4 交叉编码器重排 + 相关性过滤 ---
-                selected_rows = candidate_rows_ordered
-                if reranker is not None and len(candidate_rows_ordered) > 1:
-                    pairs = [[request.question, row["chunk_text"]] for row in candidate_rows_ordered]
-                    try:
-                        scores = reranker.predict(pairs)
-                        scored = sorted(
-                            zip(candidate_rows_ordered, scores),
-                            key=lambda x: float(x[1]),
-                            reverse=True,
-                        )
-                        top_score = float(scored[0][1]) if scored else RERANK_MIN_SCORE
-                        if top_score < RERANK_MIN_SCORE:
-                            # 全部候选都低于相关性阈值：视为无有效知识，退回闲聊兜底
-                            return []
-                        selected_rows = [row for row, _ in scored[:FINAL_TOP_K]]
-                    except Exception as e:
-                        print(f"Warning: 重排序失败，退化为 RRF TopK: {e}")
-                        selected_rows = candidate_rows_ordered[:FINAL_TOP_K]
-                else:
-                    selected_rows = candidate_rows_ordered[:FINAL_TOP_K]
+                # --- 2.4 重排序（远程 Ollama /api/rerank 或本地 sentence-transformers） ---
+                reranked_rows, top_score = await _rerank_candidates(request.question, candidate_rows_ordered)
+                if top_score < RERANK_MIN_SCORE:
+                    # 最高分低于阈值：视为无有效知识，退回闲聊兜底
+                    return []
+                selected_rows = reranked_rows[:FINAL_TOP_K]
 
                 # --- 2.5 父子块上下文扩展（small-to-big） ---
                 selected_rows = await _expand_parents(conn, selected_rows)
