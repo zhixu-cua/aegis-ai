@@ -36,7 +36,6 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "bge-m3")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen3.8:27b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
-
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", "5433"))
 DB_NAME = os.getenv("DB_NAME", "aegis_assistant")
@@ -65,15 +64,13 @@ ESTIMATE_RATIO = float(os.getenv("ESTIMATE_RATIO", "1.6"))
 # 重排序配置
 # ============================================================================
 # 重排序模式：
-#   remote                —— 调用远程「重排微服务」（推荐，重排跑在远程 GPU 服务器上，本地零资源）
+#   ollama                —— 调用远程 Ollama /api/rerank（推荐，重排跑在远程 GPU 上，本地零资源）
 #   sentence_transformers —— 在本机加载 sentence-transformers 模型（仅当本机有 GPU 时用）
 #   off                   —— 关闭重排序，直接使用 RRF 融合结果
-RERANK_MODE = os.getenv("RERANK_MODE", "remote")
-# 远程重排微服务地址（在远程 GPU 服务器上部署 rerank-service，见 rerank-service/README.md）
-RERANK_API_URL = os.getenv("RERANK_API_URL", "http://117.50.218.218:8001")
-# 重排模型名（透传给远程服务，用于日志/展示；实际由远程服务自身配置）
-RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
-# 重排相关性阈值：最高分低于该值视为无有效知识（bge-reranker 输出 logits，>0 即相关）
+RERANK_MODE = os.getenv("RERANK_MODE", "ollama")
+# 远程 Ollama 上的重排模型名（需在远程服务器执行：ollama pull bge-reranker-v2-m3）
+RERANK_MODEL = os.getenv("RERANK_MODEL", "bge-reranker-v2-m3")
+# 重排相关性阈值：最高分低于该值视为无有效知识（ollama 模式分数约为 0~1，建议设 0.3 左右）
 RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0.0"))
 
 # 本地 sentence-transformers（仅 RERANK_MODE=sentence_transformers 时使用，需本机 GPU）
@@ -114,8 +111,8 @@ async def _rerank_candidates(question: str, candidate_rows: List[Dict[str, Any]]
     if len(candidate_rows) <= 1:
         return candidate_rows, RERANK_MIN_SCORE
 
-    if RERANK_MODE == "remote":
-        return await _rerank_via_remote(question, candidate_rows)
+    if RERANK_MODE == "ollama":
+        return await _rerank_via_ollama(question, candidate_rows)
     if RERANK_MODE == "sentence_transformers":
         local = _get_local_reranker()
         if local is not None:
@@ -124,18 +121,13 @@ async def _rerank_candidates(question: str, candidate_rows: List[Dict[str, Any]]
     return candidate_rows, RERANK_MIN_SCORE
 
 
-async def _rerank_via_remote(question: str, candidate_rows: List[Dict[str, Any]]):
-    """
-    调用远程「重排微服务」（部署在 GPU 服务器，见 rerank-service/）。
-    请求体: {"query": ..., "documents": [...]}
-    响应体: {"model": ..., "results": [{"index": 0, "relevance_score": 0.9}, ...]}
-    失败时退化为 RRF 顺序。
-    """
+async def _rerank_via_ollama(question: str, candidate_rows: List[Dict[str, Any]]):
+    """调用远程 Ollama /api/rerank（重排跑在远程 GPU 上）。失败时退化为 RRF 顺序。"""
     try:
         docs = [row["chunk_text"] for row in candidate_rows]
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
-                f"{RERANK_API_URL}/rerank",
+                f"{OLLAMA_BASE_URL}/api/rerank",
                 json={"model": RERANK_MODEL, "query": question, "documents": docs},
             )
             resp.raise_for_status()
@@ -151,7 +143,7 @@ async def _rerank_via_remote(question: str, candidate_rows: List[Dict[str, Any]]
         ordered = sorted(candidate_rows, key=lambda row: score_map.get(row["id"], 0.0), reverse=True)
         return ordered, top
     except Exception as e:
-        log.warning(f"重排序失败，退化为 RRF 顺序: {e}")
+        log.warning(f"Ollama 重排序失败，退化为 RRF 顺序: {e}")
         return candidate_rows, RERANK_MIN_SCORE
 
 

@@ -8,11 +8,6 @@ from api.routes import health, chat, kb
 from api.redis_worker import listen_redis_queue
 from api.command_listener import listen_commands
 from api.services.ingestion.worker import create_worker, DocumentWorker
-from api import db
-from api.logging_utils import setup_logging
-
-# 结构化日志（统一格式 + request_id）
-setup_logging()
 
 # 全局变量
 pg_pool: asyncpg.Pool = None
@@ -36,8 +31,6 @@ async def lifespan(app: FastAPI):
         min_size=5,
         max_size=20
     )
-    # 注入共享连接池，供 chat.py 等模块复用
-    db.set_pool(pg_pool)
     
     # 2. 初始化 Redis 连接
     redis_url = os.getenv("REDIS_URL", "redis://:aegis123@localhost:6379/0")

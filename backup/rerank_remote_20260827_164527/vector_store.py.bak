@@ -4,7 +4,6 @@
 """
 
 import asyncio
-import os
 from collections import Counter
 from typing import List, Dict, Tuple, Optional
 
@@ -13,8 +12,7 @@ import httpx
 
 from api.tokenizer import tokenize
 
-# 与 chat.py 保持一致：OLLAMA_BASE_URL 指向远程服务器（默认本机）
-OLLAMA_HOST = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+OLLAMA_HOST = "http://127.0.0.1:11434"
 EMBED_MODEL = "bge-m3"
 
 

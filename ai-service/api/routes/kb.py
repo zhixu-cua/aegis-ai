@@ -55,7 +55,7 @@ async def _process(document_id: int, file_path: str):
         
         for idx, chunk in enumerate(chunks):
             payload = {
-                "model": "nomic-embed-text",
+                "model": "bge-m3",
                 "prompt": chunk
             }
             req = urllib.request.Request(
@@ -76,7 +76,7 @@ async def _process(document_id: int, file_path: str):
                     raise Exception(f"Failed to generate embedding for chunk {idx}")
             except urllib.error.HTTPError as he:
                 if he.code == 404:
-                    raise Exception("Ollama 报错 404: 缺少向量模型。请在终端执行 'ollama pull nomic-embed-text' 进行下载。")
+                    raise Exception("Ollama 报错 404: 缺少向量模型。请在终端执行 'ollama pull bge-m3' 进行下载。")
                 raise
                     
             # Insert into kb_chunk

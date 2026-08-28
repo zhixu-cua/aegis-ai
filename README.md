@@ -41,8 +41,8 @@ Aegis AI 智能售后助手是一个基于检索增强生成（RAG）技术与�
 ### 3. AI 微服务后端 (AI Service - Python)
 - **核心框架**：FastAPI (高性能异步 Web 框架) + Uvicorn。
 - **模型与推理**：
-  - Ollama (本地大模型部署引擎，托管 `qwen3:0.6b` / `qwen:1.8b` 等开源 LLM)。
-  - `nomic-embed-text` (用于生成文本的高维稠密向量)。
+  - Ollama (本地大模型部署引擎，托管 `qwen3.8:27b` 等开源 LLM)。
+  - `bge-m3` (用于生成文本的高维稠密向量)。
 - **混合检索核心**：
   - `asyncpg` (异步并发连接 PostgreSQL，实现高吞吐的 SQL 操作)。
   - `pgvector` (PostgreSQL 向量插件，执行高效率的余弦相似度计算)。
@@ -79,7 +79,7 @@ Aegis AI 智能售后助手是一个基于检索增强生成（RAG）技术与�
 ### 启动步骤
 1. **启动数据库与 AI 底层**
    - 确保 PostgreSQL 正在运行 (默认端口 5433)。
-   - 启动 Ollama，并确保模型已就绪：`ollama run qwen3:0.6b` 和 `ollama pull nomic-embed-text`。
+   - 启动 Ollama，并确保模型已就绪：`ollama run qwen3.8:27b` 和 `ollama pull bge-m3`。
 2. **启动 AI 服务 (FastAPI)**
    - 进入 `ai-service` 目录，安装依赖：`pip install fastapi uvicorn asyncpg jieba`
    - 启动服务：`uvicorn api.main:app --host 127.0.0.1 --port 8000`

@@ -3,7 +3,9 @@
     <div class="header">
       <h2>{{ datasource?.name || '知识库文档' }}</h2>
       <div class="header-actions">
-        
+        <button class="btn btn-danger" @click="handleBatchDelete" :disabled="selectedDocs.length === 0 || loading" v-if="selectedDocs.length > 0">
+          批量删除 ({{ selectedDocs.length }})
+        </button>
         <label class="btn btn-primary upload-btn" :class="{ 'disabled': uploading }" title="支持格式: .txt, .md, .pdf, .docx, .doc, .xlsx, .xls, .csv, .png, .jpg, .jpeg, .html, .htm">
           <input type="file" @change="handleUpload" accept=".txt,.md,.pdf,.docx,.doc,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.html,.htm" hidden multiple :disabled="uploading" />
           <span>{{ uploading ? '上传中...' : '上传文件' }}</span>
@@ -16,6 +18,7 @@
       <table>
         <thead>
           <tr>
+            <th width="40"><input type="checkbox" :checked="isAllSelected" @change="toggleAllSelection" /></th>
             <th>文件名</th>
             <th>状态</th>
             <th>切块数</th>
@@ -25,6 +28,7 @@
         </thead>
         <tbody>
           <tr v-for="doc in documents" :key="doc.id">
+            <td><input type="checkbox" :value="doc.id" v-model="selectedDocs" /></td>
             <td>{{ doc.filePath?.split('/').pop() || doc.fileName }}</td>
             <td>
               <span class="doc-status" :class="doc.status">
@@ -40,7 +44,7 @@
             </td>
           </tr>
           <tr v-if="documents.length === 0">
-            <td colspan="5" class="empty-td">暂无文档</td>
+            <td colspan="6" class="empty-td">暂无文档</td>
           </tr>
         </tbody>
       </table>
@@ -69,7 +73,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '@/api/request'
 
@@ -81,12 +85,26 @@ const datasource = ref<any>({})
 const documents = ref<any[]>([])
 const loading = ref(false)
 const uploading = ref(false)
+const selectedDocs = ref<number[]>([])
 
 // 分页状态
 const currentPage = ref(1)
 const pageSize = ref(20)
 const totalElements = ref(0)
 const totalPages = ref(0)
+
+const isAllSelected = computed(() => {
+  return documents.value.length > 0 && selectedDocs.value.length === documents.value.length
+})
+
+const toggleAllSelection = (e: Event) => {
+  const target = e.target as HTMLInputElement
+  if (target.checked) {
+    selectedDocs.value = documents.value.map(doc => doc.id)
+  } else {
+    selectedDocs.value = []
+  }
+}
 
 const docStatusMap: Record<string, string> = {
   pending: '等待中',
@@ -130,10 +148,12 @@ const loadDocuments = async () => {
         totalPages.value = Math.ceil(totalElements.value / pageSize.value)
       } else if (Array.isArray(res.data)) {
         // 如果后端还没改为分页，兼容旧数组
-        documents.value = res.data
-        totalElements.value = res.data.length
+        documents.value = res.data.length ? res.data : []
+        totalElements.value = res.data.length || 0
         totalPages.value = 1
       }
+      // 数据重新加载后，清空选中状态
+      selectedDocs.value = []
     }
   } catch (e) {
     console.error(e)
@@ -232,6 +252,32 @@ const handleDeleteDoc = async (docId: number) => {
   } catch (e) {
     console.error(e)
     alert('删除失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+const handleBatchDelete = async () => {
+  if (selectedDocs.value.length === 0) return
+  if (!confirm(`确定要物理删除选中的 ${selectedDocs.value.length} 个文档及其切片数据吗？删除后不可恢复。`)) return
+  
+  loading.value = true
+  try {
+    const res: any = await api.delete(`/knowledge/datasource/${datasourceId.value}/documents`, {
+      data: selectedDocs.value // axios delete body
+    })
+    
+    if (res.code === 200) {
+      alert('批量删除成功，后台将自动清理数据')
+      await loadDocuments()
+      await loadDatasourceInfo()
+      window.dispatchEvent(new CustomEvent('datasource-updated'))
+    } else {
+      alert(`批量删除失败: ${res.message || '未知错误'}`)
+    }
+  } catch (e) {
+    console.error(e)
+    alert('批量删除失败')
   } finally {
     loading.value = false
   }
