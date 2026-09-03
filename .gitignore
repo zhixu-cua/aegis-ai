@@ -23,3 +23,8 @@ deploy/.env.*
 
 data/
 ai-service/venv/
+
+Redis/dump.rdb
+Redis/server_log.txt
+Redis/*.rdb
+Redis/*.txt
